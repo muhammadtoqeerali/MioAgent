@@ -1,0 +1,50 @@
+name: mioagent
+services:
+  database:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mioagent
+      POSTGRES_PASSWORD: ${MIO_DB_PASSWORD:?Run python3 scripts/init_env.py first}
+      POSTGRES_DB: mioagent
+    volumes:
+      - mio_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mioagent -d mioagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks: [private]
+  api:
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      MIO_API_TOKEN: ${MIO_API_TOKEN:?Run python3 scripts/init_env.py first}
+      MIO_DATABASE_URL: postgresql+psycopg://mioagent:${MIO_DB_PASSWORD}@database:5432/mioagent
+      MIO_WORKSPACE_ROOT: /workspace
+      MIO_POLL_SECONDS: "1"
+    volumes:
+      - ./:/workspace:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [private]
+  dashboard:
+    build:
+      context: ./apps/dashboard
+    restart: unless-stopped
+    depends_on: [api]
+    environment:
+      MIO_API_URL: http://api:8000
+      MIO_API_TOKEN: ${MIO_API_TOKEN:?Run python3 scripts/init_env.py first}
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [private]
+networks:
+  private: {}
+volumes:
+  mio_pgdata: {}
