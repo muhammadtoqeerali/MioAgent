@@ -12,7 +12,11 @@ from pathlib import Path
 from sqlalchemy import select, update
 from sqlalchemy.orm import sessionmaker
 
-from mio.database import Task
+from mio.config import Settings
+from mio.database import AIJob, ChatMessage, Task, utcnow
+from mio.llm import ModelRouter
+from mio.memory import recent_history, relevant_notes
+from mio.supervisor import supervise
 
 IGNORED_DIRS = {
     ".git", ".venv", "node_modules", ".next", "__pycache__", ".mypy_cache",
@@ -96,13 +100,59 @@ def update_task(sessions: sessionmaker, task_id: str, *, progress: int | None = 
         return True
 
 
+async def run_ai_task(sessions: sessionmaker, task_id: str, router: ModelRouter) -> None:
+    with sessions() as db:
+        job = db.get(AIJob, task_id)
+        if job is None:
+            raise ValueError("Missing AI job metadata")
+        conversation_id, message_id = job.conversation_id, job.message_id
+        existing = db.scalar(select(ChatMessage).where(ChatMessage.task_id == task_id))
+        if existing is not None:
+            update_task(sessions, task_id, progress=100, status="completed",
+                        result={"answer": existing.content, "resumed": True})
+            return
+    history = recent_history(sessions, conversation_id, message_id)
+    prompt = history[-1]["content"]
+    notes = relevant_notes(sessions, prompt)
+    update_task(sessions, task_id, progress=10,
+                result={"stage": "planning", "note": "Descriptive plan only; no tools execute"})
+
+    async def save_plan(plan, completion):
+        update_task(sessions, task_id, progress=45, result={
+            "stage": "responding", "plan": plan,
+            "planner_model": completion.model, "planner_provider": completion.provider,
+        })
+
+    result = await supervise(router, history, notes, on_plan=save_plan)
+    # The user may have canceled while the model was responding. Commit task and
+    # assistant message atomically so the system never duplicates completed turns.
+    with sessions.begin() as db:
+        task = db.get(Task, task_id)
+        if task is None or task.status == "canceled":
+            return
+        already = db.scalar(select(ChatMessage).where(ChatMessage.task_id == task_id))
+        if already is None:
+            db.add(ChatMessage(conversation_id=conversation_id, role="assistant",
+                               content=result.answer, task_id=task_id))
+        task.result_json = json.dumps({
+            "stage": "completed", "plan": result.plan, "answer": result.answer,
+            "model": result.model, "provider": result.provider,
+            "input_tokens": result.input_tokens, "output_tokens": result.output_tokens,
+        }, ensure_ascii=False)
+        task.status, task.progress, task.updated_at = "completed", 100, utcnow()
+
+
 async def run_task(sessions: sessionmaker, task_id: str, workspace: Path,
-                   step_seconds: float) -> None:
+                   step_seconds: float, router: ModelRouter | None = None) -> None:
     task = get_task(sessions, task_id)
     if task is None:
         return
     try:
-        if task.kind == "demo_workflow":
+        if task.kind == "ai_chat":
+            if router is None:
+                raise ValueError("Model router not configured")
+            await run_ai_task(sessions, task_id, router)
+        elif task.kind == "demo_workflow":
             steps = ["Analyze task", "Prepare work plan", "Execute demo steps",
                      "Verify result", "Prepare summary"]
             for i, step in enumerate(steps, start=1):
@@ -126,10 +176,11 @@ async def run_task(sessions: sessionmaker, task_id: str, workspace: Path,
 
 
 async def worker_loop(sessions: sessionmaker, workspace: Path, poll_seconds: float,
-                      step_seconds: float) -> None:
+                      step_seconds: float, settings: Settings | None = None) -> None:
+    router = ModelRouter(settings) if settings is not None else None
     while True:
         task_id = await asyncio.to_thread(claim_task, sessions)
         if task_id is None:
             await asyncio.sleep(poll_seconds)
             continue
-        await run_task(sessions, task_id, workspace, step_seconds)
+        await run_task(sessions, task_id, workspace, step_seconds, router)

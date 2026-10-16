@@ -106,3 +106,9 @@ This is a **local development foundation, not an internet-facing production serv
 - `docs/SECURITY_MODEL.md` — access boundaries and threats.
 - `docs/PHASE_1_CHECKLIST.md` — gates to complete phase one.
 - `docs/decisions/0001-adopt-master-plan.md` — architecture decision log.
+
+## Phase 2 — Local AI supervisor (increment 0.2.0)
+
+This increment adds a dedicated `/assistant` dashboard for real model-based text tasks, persisted conversations, descriptive two-step supervisor processing, and manually approved long-term notes. Models are reached through an OpenAI-compatible API (local Ollama first). No cloud access is enabled by default, and no shell/browser/computer tools run from model output.
+
+See [Phase 2 installation and validation](docs/PHASE_2_IMPLEMENTATION.md). This release must pass the real workstation model smoke test before Phase 2 is considered complete. The existing Phase 1 demonstration tasks remain supported.

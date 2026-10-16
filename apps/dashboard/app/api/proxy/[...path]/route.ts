@@ -29,7 +29,7 @@ async function forward(req: NextRequest, path: string[]) {
       },
       body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.text(),
       cache: "no-store",
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(15000),
     });
     return new NextResponse(await response.text(), {
       status: response.status,
@@ -46,5 +46,9 @@ export async function GET(req: NextRequest, ctx: Context) {
   return forward(req, (await ctx.params).path);
 }
 export async function POST(req: NextRequest, ctx: Context) {
+  return forward(req, (await ctx.params).path);
+}
+
+export async function DELETE(req: NextRequest, ctx: Context) {
   return forward(req, (await ctx.params).path);
 }

@@ -1,8 +1,8 @@
-"""Run MioAgent Phase 1 without Docker or administrator privileges.
+"""Run MioAgent natively without Docker or administrator privileges.
 
 Run as: python3 scripts/native_runtime.py {start,status,smoke,logs,stop}
 
-Only Phase-1 allowlisted tasks can execute. Binds both servers to localhost.
+Only explicitly implemented task types can execute. Binds servers to localhost.
 Credentials and SQLite database live in a private native-Linux directory.
 """
 
@@ -12,9 +12,9 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import secrets
 import signal
-import socket
 import stat
 import subprocess
 import time
@@ -88,6 +88,63 @@ def get_token(create: bool = False) -> str:
     return token
 
 
+MODEL_CONFIG_KEYS = frozenset({
+    "MIO_LOCAL_MODEL", "MIO_LOCAL_BASE_URL", "MIO_MODEL_ROUTE", "MIO_ALLOW_CLOUD",
+})
+MODEL_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}\Z")
+
+
+def load_model_config() -> dict[str, str]:
+    """Read explicit local-only model settings from an owner-private, non-symlink file.
+
+    Never source a shell file or accept cloud credentials from this file. The
+    configuration script writes the same four keys. Missing file means that
+    AI inference is intentionally disabled until configuration is completed.
+    """
+    config = RUNTIME / "model.env"
+    try:
+        fd = os.open(config, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return {}
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeError("Untrusted model configuration file")
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            raise RuntimeError("Model configuration is accessible to other users")
+        if info.st_size > 4096:
+            raise RuntimeError("Model configuration is unexpectedly large")
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            fd = -1
+            data = handle.read(4097)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(data) > 4096:
+        raise RuntimeError("Model configuration is unexpectedly large")
+    parsed: dict[str, str] = {}
+    for line in data.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if separator != "=" or key not in MODEL_CONFIG_KEYS or key in parsed:
+            raise RuntimeError("Model configuration contains an unsupported or repeated key")
+        parsed[key] = value.strip()
+    if parsed.get("MIO_LOCAL_MODEL") and not MODEL_NAME_RE.fullmatch(
+        parsed["MIO_LOCAL_MODEL"]
+    ):
+        raise RuntimeError("Invalid local model identifier")
+    if parsed.get("MIO_LOCAL_BASE_URL", "http://127.0.0.1:11434/v1") != (
+        "http://127.0.0.1:11434/v1"
+    ):
+        raise RuntimeError("Model endpoint must remain on the approved loopback URL")
+    if parsed.get("MIO_MODEL_ROUTE", "local") != "local":
+        raise RuntimeError("Only local model routing is enabled in this deployment")
+    if parsed.get("MIO_ALLOW_CLOUD", "false").lower() != "false":
+        raise RuntimeError("Cloud calls are disabled in this deployment")
+    return parsed
+
+
 @contextmanager
 def single_instance():
     lock_path = RUNTIME / "runtime.lock"
@@ -110,18 +167,35 @@ def command_for_pid(pid: int) -> str:
 
 
 def is_our_process(role: str, pid: int) -> bool:
-    if pid < 1:
+    """Verify PID ownership, working directory and executable before managing a service.
+
+    Next.js may rename the Node process to ``next-server (v...)`` after startup.
+    Matching the original command alone falsely reports that process as stopped.
+    Never match an unrelated process merely because it listens on our port.
+    """
+    if pid < 1 or role not in PROCESSES:
         return False
-    command = command_for_pid(pid)
-    if PROCESSES[role] not in command:
-        return False
+    proc = Path(f"/proc/{pid}")
     expected_cwd = PROJECT if role == "api" else DASHBOARD
     try:
-        if Path(os.readlink(f"/proc/{pid}/cwd")) != expected_cwd:
+        if proc.stat().st_uid != os.getuid():
             return False
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
+        if Path(os.readlink(proc / "cwd")) != expected_cwd:
+            return False
+        command = command_for_pid(pid)
+        if not command:
+            return False
+        if role == "api":
+            return PROCESSES["api"] in command
+        if PROCESSES["dashboard"] in command:
+            return True
+        # Node/Next.js changes its process title *after* the server starts.
+        # Still require a PID we recorded, the correct cwd, uid and Node binary.
+        if not command.startswith("next-server"):
+            return False
+        executable = Path(os.readlink(proc / "exe")).name
+        return executable in {"node", "nodejs"}
+    except (OSError, ValueError):
         return False
 
 
@@ -137,13 +211,24 @@ def is_running(role: str) -> bool:
     return pid is not None and is_our_process(role, pid)
 
 
+def port_listeners(port: int) -> str:
+    """Return genuine TCP LISTEN sockets, not connection TIME_WAIT records.
+
+    A bind() test without SO_REUSEADDR can incorrectly report a busy port
+    immediately after a Next.js restart. `ss -ltn` queries LISTEN state
+    directly; it never sends a signal or changes firewall/socket settings.
+    """
+    if not 1 <= port <= 65535:
+        raise ValueError("Invalid TCP port")
+    result = subprocess.run(
+        ["ss", "-H", "-ltnp", f"sport = :{port}"],
+        check=True, capture_output=True, text=True, timeout=8,
+    )
+    return result.stdout.strip()
+
+
 def port_available(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind(("127.0.0.1", port))
-        except OSError:
-            return False
-    return True
+    return not port_listeners(port)
 
 
 def load_json(url: str, token: str | None = None, data: dict | None = None) -> dict:
@@ -219,8 +304,12 @@ def start() -> None:
             print("A MioAgent native service is already running. Use 'status' or 'stop'.")
             raise SystemExit(1)
         for port in (8000, 3000):
-            if not port_available(port):
-                raise RuntimeError(f"Port {port} is already occupied; refusing to start")
+            listeners = port_listeners(port)
+            if listeners:
+                raise RuntimeError(
+                    f"Port {port} has an active TCP listener. "
+                    "It will NOT be stopped automatically.\n" + listeners
+                )
         python = Path.home() / ".cache" / "mioagent" / "phase1-venv" / "bin" / "python"
         next_bin = DASHBOARD / "node_modules" / "next" / "dist" / "bin" / "next"
         build_id = DASHBOARD / ".next" / "BUILD_ID"
@@ -235,13 +324,23 @@ def start() -> None:
             raise RuntimeError("Node.js binary was not found")
         token = get_token(create=True)
         env = os.environ.copy()
+        # Explicit defaults prevent inherited shell variables from enabling
+        # cloud requests or silently selecting a different provider.
         env.update({
             "MIO_API_TOKEN": token,
             "MIO_DATABASE_URL": f"sqlite+pysqlite:///{RUNTIME / 'data' / 'mioagent.db'}",
             "MIO_WORKSPACE_ROOT": str(PROJECT),
             "MIO_API_URL": API_URL,
             "MIO_POLL_SECONDS": "1",
+            "MIO_LOCAL_MODEL": "",
+            "MIO_LOCAL_BASE_URL": "http://127.0.0.1:11434/v1",
+            "MIO_MODEL_ROUTE": "local",
+            "MIO_ALLOW_CLOUD": "false",
+            "MIO_CLOUD_API_KEY": "",
         })
+        # Fix: previously configure_model.py wrote model.env but no process
+        # actually loaded it. The supervisor therefore stayed unconfigured.
+        env.update(load_model_config())
         print("Starting locally on 127.0.0.1 (no Docker / no sudo)...")
         start_service(
             "api", [str(python), "-m", "uvicorn", "mio.api:create_app", "--factory",
@@ -260,16 +359,19 @@ def start() -> None:
             raise RuntimeError("Dashboard did not start; read logs with 'logs'")
         try:
             status = load_json(f"{DASH_URL}/api/proxy/status")
-            assert status["version"] == "0.1.0"
+            assert status["version"] == "0.2.0"
         except (OSError, HTTPError, URLError, AssertionError, KeyError, ValueError) as exc:
             stop_service("dashboard")
             stop_service("api")
             raise RuntimeError("Dashboard proxy failed authentication to API") from exc
-        print("\nSUCCESS: native Phase 1 services are running")
+        print("\nSUCCESS: native MioAgent services are running")
         print("  Dashboard:", DASH_URL)
         print("  API health:", f"{API_URL}/health")
         print("  Runtime data:", RUNTIME)
-        print("  Note: no AI model, voice, or computer-control agent is active yet")
+        model = env.get("MIO_LOCAL_MODEL")
+        print("  AI model configured:", model or "no (use configure_model.py)")
+        print("  Local model service: independently verify Ollama is running")
+        print("  Note: voice and computer-control agents are not implemented yet")
 
 
 def status() -> None:
@@ -283,6 +385,9 @@ def status() -> None:
         try:
             with urlopen(url, timeout=2) as response:
                 print(f"{name} HTTP: {response.status}")
+                if not is_running(name):
+                    print(f"  WARNING: {name} serves HTTP, but its recorded PID is not recognized.")
+                    print("  Do not kill the port occupant without identifying its process.")
         except (OSError, HTTPError, URLError):
             print(f"{name} HTTP: unavailable")
     print("Runtime:", RUNTIME)
@@ -295,10 +400,10 @@ def smoke() -> None:
     if result.get("ok") is not True:
         raise RuntimeError("API health failed")
     data = load_json(f"{API_URL}/api/status", token)
-    if data.get("version") != "0.1.0":
+    if data.get("version") != "0.2.0":
         raise RuntimeError("Unexpected API version")
     proxied = load_json(f"{DASH_URL}/api/proxy/status")
-    if proxied.get("version") != "0.1.0":
+    if proxied.get("version") != "0.2.0":
         raise RuntimeError("Dashboard proxy cannot access API")
     test_text = "MioAgent native runtime smoke test"
     new = load_json(f"{API_URL}/api/tasks", token, {"kind": "echo", "prompt": test_text})

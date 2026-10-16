@@ -1,7 +1,9 @@
-"""Centralized configuration. Credentials belong in environment variables, not source code."""
-from pathlib import Path
+"""Configuration, with secrets restricted to environment variables."""
 
-from pydantic import Field
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,3 +15,12 @@ class Settings(BaseSettings):
     mio_workspace_root: Path = Path(".")
     mio_poll_seconds: float = Field(default=1.0, ge=0.1, le=60)
     mio_demo_step_seconds: float = Field(default=0.5, ge=0, le=60)
+
+    # Phase 2: local inference on loopback. Cloud disabled unless explicitly enabled.
+    mio_local_base_url: str = "http://127.0.0.1:11434/v1"
+    mio_local_model: str = ""
+    mio_allow_cloud: bool = False
+    mio_cloud_base_url: str = "https://api.openai.com/v1"
+    mio_cloud_model: str = ""
+    mio_cloud_api_key: SecretStr = SecretStr("")
+    mio_model_route: Literal["auto", "local", "cloud"] = "auto"

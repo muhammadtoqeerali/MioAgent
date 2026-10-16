@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mioagent"
-version = "0.1.0"
-description = "Local-first AI workstation assistant — foundation"
+version = "0.2.0"
+description = "Local-first AI workstation assistant — Phase 2 intelligence"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -13,6 +13,7 @@ dependencies = [
   "pydantic-settings>=2.5,<3",
   "sqlalchemy>=2.0,<3",
   "psycopg[binary]>=3.2,<4",
+  "httpx>=0.27,<1",
 ]
 
 [project.optional-dependencies]

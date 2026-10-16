@@ -11,7 +11,7 @@ type Task = {
 };
 type System = {
   name: string; version: string; stage: string; mode: string;
-  ai_model_connected: boolean; voice_enabled: boolean;
+  ai_model_connected: boolean; ai_model_configured?: boolean; voice_enabled: boolean;
   computer_control_enabled: boolean; task_counts: Record<string, number>;
 };
 
@@ -97,18 +97,19 @@ export default function Home() {
         <div className="brand"><span className="brand-mark">✦</span><div><strong>MioAgent</strong><small>COMMAND CENTER</small></div></div>
         <div className="nav-label">WORKSPACE</div>
         <button className={`nav-item ${view === "overview" ? "active" : ""}`} onClick={() => setView("overview")}><span>◈</span> Overview</button>
+        <a className="nav-item" href="/assistant"><span>✦</span> AI Assistant</a>
         <button className={`nav-item ${view === "activity" ? "active" : ""}`} onClick={() => setView("activity")}><span>▤</span> Task activity</button>
         <button className={`nav-item ${view === "settings" ? "active" : ""}`} onClick={() => setView("settings")}><span>⚙</span> Capabilities</button>
-        <div className="sidebar-foot"><span className="status-dot" /> Local-first foundation <small>v0.1.0 · Phase 1</small></div>
+        <div className="sidebar-foot"><span className="status-dot" /> Local-first foundation <small>v0.2.0 · Phase 2</small></div>
       </aside>
       <main className="main">
         <header className="topbar"><span>WORKSTATION / {view.toUpperCase()}</span><div><span className="muted">Synced {lastSync}</span><span className="pill">LOCAL ONLY</span></div></header>
         <div className="content">
-          <div className="hero"><div className="hero-kicker">MIOAGENT / SYSTEM CONSOLE</div><h1>Your AI command center<span>.</span></h1><p>The foundation is live. Agent reasoning, voice and computer automation are scheduled for later development phases.</p></div>
+          <div className="hero"><div className="hero-kicker">MIOAGENT / SYSTEM CONSOLE</div><h1>Your AI command center<span>.</span></h1><p>The foundation is live. Open AI Assistant for model-based reasoning and persistent conversations. Voice and computer control are planned for later phases.</p></div>
           {error && <div role="alert" className="alert">Connection or task error: {error}</div>}
           {view === "overview" && <>
             <section className="stats">
-              <div className="stat"><label>BACKEND</label><b>{system ? "Online" : "Connecting"}</b><span>FastAPI / PostgreSQL</span></div>
+              <div className="stat"><label>BACKEND</label><b>{system ? "Online" : "Connecting"}</b><span>FastAPI / persistent database</span></div>
               <div className="stat"><label>RUNNING</label><b>{counts.running}</b><span>Background work items</span></div>
               <div className="stat"><label>QUEUED</label><b>{counts.queued}</b><span>Waiting to execute</span></div>
               <div className="stat"><label>COMPLETED</label><b>{counts.completed}</b><span>From recent task history</span></div>
@@ -126,10 +127,10 @@ export default function Home() {
               <section className="panel"><div className="panel-title"><h2>System readiness</h2><span className="tag good">FOUNDATION</span></div>
                 <div className="readiness"><span>API and task store</span><strong className={system ? "good-text" : ""}>{system ? "Operational" : "Waiting"}</strong></div>
                 <div className="readiness"><span>Persistent background worker</span><strong className={system ? "good-text" : ""}>{system ? "Operational" : "Waiting"}</strong></div>
-                <div className="readiness"><span>AI model connection</span><strong>Not configured</strong></div>
+                <div className="readiness"><span>AI model configuration</span><strong>{system?.ai_model_connected ? "Reachable" : system?.ai_model_configured ? "Configured, offline" : "Not configured"}</strong></div>
                 <div className="readiness"><span>Voice recognition</span><strong>Not implemented</strong></div>
                 <div className="readiness"><span>Computer control</span><strong>Disabled</strong></div>
-                <p className="hint bottom-note">This screen does not claim capabilities that have not yet been built or authorized.</p>
+                <p className="hint bottom-note">Use the AI Assistant page for model availability, memory, and real model-based tasks.</p>
               </section>
             </div>
             <section className="panel"><div className="panel-title"><h2>Recent activity</h2><button className="link-button" onClick={() => setView("activity")}>View all →</button></div><TaskRows tasks={tasks.slice(0,5)} onSelect={(id) => { setSelected(id); setView("activity"); }} /></section>

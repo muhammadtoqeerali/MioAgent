@@ -1,4 +1,5 @@
-"""Local-only REST API with bearer-token authentication for sensitive routes."""
+"""Local-first FastAPI backend with authenticated task and AI conversation endpoints."""
+
 import asyncio
 import json
 import secrets
@@ -11,13 +12,23 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from mio.config import Settings
-from mio.database import Task, create_database
+from mio.database import AIJob, ChatMessage, Conversation, MemoryNote, Task, create_database, utcnow
+from mio.llm import ModelRouter
 from mio.workers import reset_interrupted_tasks, worker_loop
 
 
 class TaskCreate(BaseModel):
     kind: Literal["demo_workflow", "workspace_inventory", "echo"] = "demo_workflow"
     prompt: str = Field(default="", max_length=4000)
+
+
+class AskCreate(BaseModel):
+    prompt: str = Field(min_length=1, max_length=12000)
+    conversation_id: str | None = Field(default=None, max_length=36)
+
+
+class RememberCreate(BaseModel):
+    content: str = Field(min_length=3, max_length=2000)
 
 
 def serialize_task(t: Task) -> dict:
@@ -29,8 +40,14 @@ def serialize_task(t: Task) -> dict:
     }
 
 
+def serialize_message(m: ChatMessage) -> dict:
+    return {"id": m.id, "role": m.role, "content": m.content,
+            "task_id": m.task_id, "created_at": m.created_at.isoformat()}
+
+
 def create_app(config: Settings | None = None) -> FastAPI:
     settings = config or Settings()
+    router = ModelRouter(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -40,7 +57,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
         reset_interrupted_tasks(sessions)
         worker = asyncio.create_task(worker_loop(
             sessions, settings.mio_workspace_root, settings.mio_poll_seconds,
-            settings.mio_demo_step_seconds))
+            settings.mio_demo_step_seconds, settings))
         try:
             yield
         finally:
@@ -49,7 +66,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 await worker
             engine.dispose()
 
-    app = FastAPI(title="MioAgent", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="MioAgent", version="0.2.0", lifespan=lifespan)
 
     def require_token(authorization: str | None = Header(default=None)) -> None:
         expected = f"Bearer {settings.mio_api_token}"
@@ -58,19 +75,107 @@ def create_app(config: Settings | None = None) -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"ok": True, "service": "mioagent-api", "version": "0.1.0"}
+        return {"ok": True, "service": "mioagent-api", "version": "0.2.0"}
 
     @app.get("/api/status", dependencies=[Depends(require_token)])
-    def current_status(request: Request):
+    async def current_status(request: Request):
         with request.app.state.sessions() as db:
             values = db.execute(select(Task.status, func.count()).group_by(Task.status)).all()
+        model_state = await router.probe()
         return {
-            "name": "MioAgent", "version": "0.1.0", "stage": "Phase 1 — Foundation",
-            "mode": "local", "ai_model_connected": False, "voice_enabled": False,
-            "computer_control_enabled": False,
+            "name": "MioAgent", "version": "0.2.0", "stage": "Phase 2 — Intelligence",
+            "mode": "local", "ai_model_connected": model_state["local_reachable"],
+            "ai_model_configured": model_state["configured"],
+            "voice_enabled": False, "computer_control_enabled": False,
             "task_counts": {name: count for name, count in values},
             "timestamp": datetime.now(UTC).isoformat(),
         }
+
+    @app.get("/api/assistant/status", dependencies=[Depends(require_token)])
+    async def assistant_status():
+        return await router.probe()
+
+    @app.get("/api/assistant/conversations", dependencies=[Depends(require_token)])
+    def list_conversations(request: Request):
+        with request.app.state.sessions() as db:
+            items = db.scalars(
+                select(Conversation).order_by(Conversation.updated_at.desc()).limit(100)
+            ).all()
+            return {"conversations": [
+                {"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat()}
+                for c in items
+            ]}
+
+    @app.get("/api/assistant/conversations/{conversation_id}",
+             dependencies=[Depends(require_token)])
+    def get_conversation(conversation_id: str, request: Request):
+        with request.app.state.sessions() as db:
+            conversation = db.get(Conversation, conversation_id)
+            if conversation is None:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            messages = db.scalars(
+                select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
+                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc()).limit(100)
+            ).all()
+            return {"id": conversation.id, "title": conversation.title,
+                    "messages": [serialize_message(m) for m in messages]}
+
+    @app.post("/api/assistant/ask", status_code=202,
+              dependencies=[Depends(require_token)])
+    def ask(payload: AskCreate, request: Request):
+        if not router.configured():
+            raise HTTPException(status_code=409, detail="Configure a local model first")
+        content = payload.prompt.strip()
+        if not content:
+            raise HTTPException(status_code=422, detail="Empty prompt")
+        with request.app.state.sessions.begin() as db:
+            if payload.conversation_id:
+                conversation = db.get(Conversation, payload.conversation_id)
+                if conversation is None:
+                    raise HTTPException(status_code=404, detail="Conversation not found")
+            else:
+                conversation = Conversation(title=content[:100])
+                db.add(conversation)
+                db.flush()
+            message = ChatMessage(conversation_id=conversation.id, role="user", content=content)
+            db.add(message)
+            task = Task(kind="ai_chat", prompt=content, status="queued")
+            db.add(task)
+            db.flush()
+            db.add(AIJob(task_id=task.id, conversation_id=conversation.id, message_id=message.id))
+            conversation.updated_at = utcnow()
+            answer = {"conversation_id": conversation.id, "task_id": task.id, "status": "queued"}
+        return answer
+
+    @app.get("/api/assistant/memories", dependencies=[Depends(require_token)])
+    def list_memories(request: Request):
+        with request.app.state.sessions() as db:
+            notes = db.scalars(
+                select(MemoryNote).order_by(MemoryNote.created_at.desc()).limit(100)
+            ).all()
+            return {"memories": [{"id": n.id, "content": n.content} for n in notes]}
+
+    @app.post("/api/assistant/memories", status_code=201,
+              dependencies=[Depends(require_token)])
+    def remember(payload: RememberCreate, request: Request):
+        content = payload.content.strip()
+        if len(content) < 3:
+            raise HTTPException(status_code=422, detail="Memory note too short")
+        with request.app.state.sessions.begin() as db:
+            note = MemoryNote(content=content)
+            db.add(note)
+            db.flush()
+            return {"id": note.id, "content": note.content}
+
+    @app.delete("/api/assistant/memories/{memory_id}",
+                dependencies=[Depends(require_token)])
+    def delete_memory(memory_id: str, request: Request):
+        with request.app.state.sessions.begin() as db:
+            note = db.get(MemoryNote, memory_id)
+            if note is None:
+                raise HTTPException(status_code=404, detail="Memory not found")
+            db.delete(note)
+            return {"deleted": True}
 
     @app.get("/api/tasks", dependencies=[Depends(require_token)])
     def list_tasks(request: Request):

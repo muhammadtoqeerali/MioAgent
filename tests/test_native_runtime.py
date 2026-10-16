@@ -31,3 +31,45 @@ def test_refuse_symlink(tmp_path):
     symlink.symlink_to(target, target_is_directory=True)
     with pytest.raises(RuntimeError, match="Refusing symlink"):
         native.private_dir(symlink)
+
+
+def test_next_server_renamed_process_recognized(monkeypatch, tmp_path):
+    """Next.js may replace its process command with `next-server (v...)`."""
+    pid = os.getpid()
+    monkeypatch.setattr(native, "DASHBOARD", tmp_path)
+    monkeypatch.setattr(native, "command_for_pid", lambda _pid: "next-server (v16.4.1) ")
+    original = os.readlink
+
+    def fake_readlink(path):
+        if str(path) == f"/proc/{pid}/cwd":
+            return str(tmp_path)
+        if str(path) == f"/proc/{pid}/exe":
+            return "/usr/local/bin/node"
+        return original(path)
+
+    monkeypatch.setattr(native.os, "readlink", fake_readlink)
+    assert native.is_our_process("dashboard", pid)
+
+
+def test_next_server_non_node_process_rejected(monkeypatch, tmp_path):
+    pid = os.getpid()
+    monkeypatch.setattr(native, "DASHBOARD", tmp_path)
+    monkeypatch.setattr(native, "command_for_pid", lambda _pid: "next-server (v16.4.1) ")
+    original = os.readlink
+
+    def fake_readlink(path):
+        if str(path) == f"/proc/{pid}/cwd":
+            return str(tmp_path)
+        if str(path) == f"/proc/{pid}/exe":
+            return "/usr/bin/python3"
+        return original(path)
+
+    monkeypatch.setattr(native.os, "readlink", fake_readlink)
+    assert not native.is_our_process("dashboard", pid)
+
+
+def test_other_workdir_next_process_rejected(monkeypatch, tmp_path):
+    pid = os.getpid()
+    monkeypatch.setattr(native, "DASHBOARD", tmp_path / "not_the_working_directory")
+    monkeypatch.setattr(native, "command_for_pid", lambda _pid: "next-server (v16.4.1) ")
+    assert not native.is_our_process("dashboard", pid)
