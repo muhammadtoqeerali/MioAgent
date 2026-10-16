@@ -121,6 +121,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             "ai_model_configured": model_state["configured"],
             "voice_enabled": False, "computer_control_enabled": False,
             "project_mode_enabled": settings.mio_enable_project_mode,
+            "sandbox_verify_enabled": settings.mio_enable_sandbox_verify,
             "project_mode_capability": "reviewed_source_drafts_only" if settings.mio_enable_project_mode else "off",
             "task_counts": {name: count for name, count in values},
             "timestamp": datetime.now(UTC).isoformat(),
@@ -253,6 +254,40 @@ def create_app(config: Settings | None = None) -> FastAPI:
             db.flush()
             project.draft_task_id = task.id
             return serialize_project(project)
+
+    @app.get("/api/projects/{project_id}/verification", dependencies=[Depends(require_token)])
+    def get_project_verification(project_id: str, request: Request):
+        require_project_feature()
+        with request.app.state.sessions() as db:
+            if db.get(Project, project_id) is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            existing = db.scalar(select(Task).where(
+                Task.kind == "project_verify", Task.prompt == project_id,
+            ).order_by(Task.created_at.desc(), Task.id.desc()))
+            return serialize_task(existing) if existing else {"status": "not_run", "result": None}
+
+    @app.post("/api/projects/{project_id}/verify", status_code=202,
+              dependencies=[Depends(require_token)])
+    def request_project_verification(project_id: str, payload: ProjectApply, request: Request):
+        require_project_feature()
+        if not settings.mio_enable_sandbox_verify:
+            raise HTTPException(status_code=409, detail="Sandbox verification not enabled on workstation")
+        with request.app.state.sessions.begin() as db:
+            project = db.get(Project, project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            if project.status != "completed" or not project.workspace_path:
+                raise HTTPException(status_code=409, detail="Approve project files before verification")
+            active = db.scalar(select(Task).where(
+                Task.kind == "project_verify", Task.prompt == project_id,
+                Task.status.in_(["queued", "running"]),
+            ))
+            if active is not None:
+                raise HTTPException(status_code=409, detail="Verification is already running")
+            task = Task(kind="project_verify", prompt=project.id, status="queued")
+            db.add(task)
+            db.flush()
+            return serialize_task(task)
 
     @app.post("/api/projects/{project_id}/apply", status_code=202,
               dependencies=[Depends(require_token)])

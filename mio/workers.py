@@ -17,6 +17,7 @@ from mio.database import AIJob, ChatMessage, Task, utcnow
 from mio.llm import ModelRouter
 from mio.memory import recent_history, relevant_notes
 from mio.project_tasks import apply_project, draft_project
+from mio.project_verification_tasks import verify_project_task
 from mio.supervisor import supervise
 
 IGNORED_DIRS = {
@@ -158,6 +159,11 @@ async def run_task(sessions: sessionmaker, task_id: str, workspace: Path,
             if router is None:
                 raise ValueError("Project Mode requires configured settings")
             await asyncio.to_thread(apply_project, sessions, task_id,
+                                    router.settings.mio_project_root)
+        elif task.kind == "project_verify":
+            if router is None or not router.settings.mio_enable_sandbox_verify:
+                raise ValueError("Sandbox verification is disabled")
+            await asyncio.to_thread(verify_project_task, sessions, task_id,
                                     router.settings.mio_project_root)
         elif task.kind == "ai_chat":
             if router is None:

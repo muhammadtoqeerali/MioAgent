@@ -28,3 +28,7 @@ class Settings(BaseSettings):
     # v0.3: off by default; project drafts do not execute generated code.
     mio_enable_project_mode: bool = False
     mio_project_root: Path = Path("/var/tmp/mioagent-private-projects")
+
+
+    # v0.3B: owner-flag-only Bubblewrap unittest verification, disabled initially.
+    mio_enable_sandbox_verify: bool = False

@@ -8,6 +8,10 @@ type Draft = { plan: string[]; files: DraftFile[]; checks: string[]; verificatio
 type Project = { id: string; title: string; requirements: string; status: string;
   workspace: string | null; draft_task_id: string | null; apply_task_id: string | null;
   error: string | null; draft?: Draft | null };
+type Verification = { status: string; result: {
+  outcome: string; passed: boolean; tests_run: number; log: string; executed: boolean;
+  isolation?: string; return_code?: number
+} | null; error?: string | null };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/proxy/${path}`, { cache: "no-store", ...init });
@@ -27,6 +31,7 @@ export default function ProjectsPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [verification, setVerification] = useState<Verification | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -35,6 +40,11 @@ export default function ProjectsPage() {
       if (active) {
         const detail = await api<Project>(`projects/${encodeURIComponent(active)}`);
         setProject(detail);
+        if (detail.status === "completed") {
+          setVerification(await api<Verification>(`projects/${encodeURIComponent(active)}/verification`));
+        } else {
+          setVerification(null);
+        }
       }
       setError("");
     } catch (e) {
@@ -44,10 +54,11 @@ export default function ProjectsPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
-    if (!active || !project || !["drafting", "applying"].includes(project.status)) return;
+    if (!active || !project || (!["drafting", "applying"].includes(project.status) &&
+      !["queued", "running"].includes(verification?.status ?? ""))) return;
     const interval = setInterval(() => void refresh(), 1600);
     return () => clearInterval(interval);
-  }, [active, project, refresh]);
+  }, [active, project, verification?.status, refresh]);
 
   async function create() {
     if (title.trim().length < 3 || requirements.trim().length < 20 || busy) return;
@@ -73,6 +84,19 @@ export default function ProjectsPage() {
       });
       setProject(result); await refresh();
     } catch (e) { setError(e instanceof Error ? e.message : "Approval could not be applied"); }
+    finally { setBusy(false); }
+  }
+
+  async function verify() {
+    if (!active || project?.status !== "completed" || busy) return;
+    setBusy(true); setError("");
+    try {
+      const queued = await api<Verification>(`projects/${encodeURIComponent(active)}/verify`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved: true }),
+      });
+      setVerification(queued);
+    } catch (e) { setError(e instanceof Error ? e.message : "Sandbox verification unavailable"); }
     finally { setBusy(false); }
   }
 
@@ -102,8 +126,8 @@ export default function ProjectsPage() {
     </aside>
     <main className="ai-main">
       <div className="ai-header"><div><strong>Autonomous Project Mode</strong>
-        <div className="ai-muted">Local AI draft → static checks → explicit approval → private source files</div>
-      </div><div className="ai-chip">No shell execution · No paid APIs</div></div>
+        <div className="ai-muted">Local model → reviewed files → optional isolated test verification</div>
+      </div><div className="ai-chip">No arbitrary commands · No paid APIs</div></div>
       {error && <div className="ai-error" role="alert">{error}</div>}
       {!active ? <div className="ai-memory project-form">
         <h2>Start a coding project</h2>
@@ -141,15 +165,31 @@ export default function ProjectsPage() {
               onClick={() => setSelectedFile(file.path)}>{file.path}</button>)}</div>
           {shown && <pre className="project-code">{shown.content}</pre>}
           <p className="project-warning">{project.draft.verification}. Review every file before approving.
-            No executable sandbox is enabled in this milestone.</p>
+            Testing requires separate approval and workstation sandbox enablement.</p>
           {project.status === "review" && <button className="project-approve" disabled={busy}
             onClick={() => void approve()}>{busy ? "Applying…" : "I approve writing these files →"}</button>}
           {project.status === "completed" && <p className="project-success">
-            Approved source was saved to <code>{project.workspace}</code>. No tests or commands have been run.
+            Approved source was saved to <code>{project.workspace}</code>.
           </p>}
+          {project.status === "completed" && <section>
+            <h3>Optional isolated unit-test verification</h3>
+            <p>Only approved test_*.py files can run. Bubblewrap blocks network access and does not mount
+              your personal files or GPUs. This is not autonomous repair or a security guarantee.</p>
+            <button className="project-approve" disabled={busy || ["queued", "running"].includes(verification?.status ?? "")}
+              onClick={() => void verify()}>{busy ? "Starting…" : "I approve sandbox test execution →"}</button>
+            {verification && verification.status !== "not_run" && <div className="project-summary">
+              <strong>Verification: {verification.status}</strong>
+              {verification.result && <div>
+                <p>{verification.result.outcome} · {verification.result.tests_run} tests run ·
+                  {verification.result.passed ? " passed" : " not passed"}</p>
+                <pre className="project-code">{verification.result.log}</pre>
+              </div>}
+              {verification.error && <p role="alert">{verification.error}</p>}
+            </div>}
+          </section>}
         </>}
       </div>}
-      <footer className="ai-footer">Early release: no shell, browser, deployment, or unattended project completion yet.</footer>
+      <footer className="ai-footer">Guarded Python unittest verification only. No shell, browser, auto-repair, deployment, or unattended completion.</footer>
     </main>
   </div>;
 }

@@ -353,6 +353,18 @@ def start() -> None:
             "MIO_ENABLE_PROJECT_MODE": "true" if feature_enabled else "false",
             "MIO_PROJECT_ROOT": str(RUNTIME / "projects"),
         })
+        # Verified sandbox execution requires its own owner-private marker. The
+        # inherited MIO_ENABLE_SANDBOX_VERIFY value is never trusted.
+        verify_marker = RUNTIME / "sandbox-verify-enabled"
+        verify_enabled = False
+        if verify_marker.exists() or verify_marker.is_symlink():
+            info = verify_marker.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) & 0o077
+                    or verify_marker.read_text(encoding="utf-8") != "enabled\n"):
+                raise RuntimeError("Sandbox verification flag must be an owner-private file")
+            verify_enabled = True
+        env["MIO_ENABLE_SANDBOX_VERIFY"] = "true" if verify_enabled else "false"
         # Fix: previously configure_model.py wrote model.env but no process
         # actually loaded it. The supervisor therefore stayed unconfigured.
         env.update(load_model_config())
