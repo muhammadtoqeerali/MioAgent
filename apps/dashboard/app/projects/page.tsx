@@ -8,6 +8,10 @@ type Draft = { plan: string[]; files: DraftFile[]; checks: string[]; verificatio
 type Project = { id: string; title: string; requirements: string; status: string;
   workspace: string | null; draft_task_id: string | null; apply_task_id: string | null;
   error: string | null; draft?: Draft | null };
+type Repair = { status: string; result: {
+  diagnosis: string; changed_files: string[];
+  candidate: Draft; review_required: boolean; executed: boolean;
+} | null; error?: string | null };
 type Verification = { status: string; result: {
   outcome: string; passed: boolean; tests_run: number; log: string; executed: boolean;
   isolation?: string; return_code?: number
@@ -32,6 +36,8 @@ export default function ProjectsPage() {
   const [busy, setBusy] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [verification, setVerification] = useState<Verification | null>(null);
+  const [repair, setRepair] = useState<Repair | null>(null);
+  const [repairFile, setRepairFile] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -42,8 +48,10 @@ export default function ProjectsPage() {
         setProject(detail);
         if (detail.status === "completed") {
           setVerification(await api<Verification>(`projects/${encodeURIComponent(active)}/verification`));
+          setRepair(await api<Repair>(`projects/${encodeURIComponent(active)}/repair`));
         } else {
           setVerification(null);
+          setRepair(null);
         }
       }
       setError("");
@@ -55,10 +63,11 @@ export default function ProjectsPage() {
   useEffect(() => { void refresh(); }, [refresh]);
   useEffect(() => {
     if (!active || !project || (!["drafting", "applying"].includes(project.status) &&
-      !["queued", "running"].includes(verification?.status ?? ""))) return;
+      !["queued", "running"].includes(verification?.status ?? "") &&
+      !["queued", "running"].includes(repair?.status ?? ""))) return;
     const interval = setInterval(() => void refresh(), 1600);
     return () => clearInterval(interval);
-  }, [active, project, verification?.status, refresh]);
+  }, [active, project, verification?.status, repair?.status, refresh]);
 
   async function create() {
     if (title.trim().length < 3 || requirements.trim().length < 20 || busy) return;
@@ -97,6 +106,34 @@ export default function ProjectsPage() {
       });
       setVerification(queued);
     } catch (e) { setError(e instanceof Error ? e.message : "Sandbox verification unavailable"); }
+    finally { setBusy(false); }
+  }
+
+  async function requestRepair() {
+    if (!active || busy) return;
+    setBusy(true); setError("");
+    try {
+      const queued = await api<Repair>(`projects/${encodeURIComponent(active)}/repair`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved: true }),
+      });
+      setRepair(queued);
+    } catch (e) { setError(e instanceof Error ? e.message : "Repair unavailable"); }
+    finally { setBusy(false); }
+  }
+
+  async function promoteRepair() {
+    if (!active || busy || repair?.status !== "completed") return;
+    setBusy(true); setError("");
+    try {
+      const revision = await api<Project>(`projects/${encodeURIComponent(active)}/repair/use`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved: true }),
+      });
+      setActive(revision.id); setProject(revision); setRepair(null); setSelectedFile(null);
+      setRepairFile(null);
+      await api<{ projects: Project[] }>("projects").then(r => setProjects(r.projects));
+    } catch (e) { setError(e instanceof Error ? e.message : "Cannot create revision"); }
     finally { setBusy(false); }
   }
 
@@ -187,9 +224,35 @@ export default function ProjectsPage() {
               {verification.error && <p role="alert">{verification.error}</p>}
             </div>}
           </section>}
+          {project.status === "completed" && verification?.status === "completed" &&
+            verification.result?.executed === true && verification.result.passed === false &&
+            verification.result.outcome === "failed" && <section>
+            <h3>Local AI repair proposal</h3>
+            <p>Repair proposals replace existing application Python source only.
+              Your tests and approved original project remain unchanged.
+              No repair is executed until you review, approve, and verify the new revision.</p>
+            {(!repair || repair.status === "not_run") &&
+              <button disabled={busy} onClick={() => void requestRepair()}>
+                Propose a fix using local model →
+              </button>}
+            {repair && ["queued", "running"].includes(repair.status) &&
+              <p>Local model is analyzing failed tests…</p>}
+            {repair?.status === "failed" && <p role="alert">{repair.error ?? "Repair proposal failed"}</p>}
+            {repair?.status === "completed" && repair.result && <>
+              <p><strong>Diagnosis:</strong> {repair.result.diagnosis}</p>
+              <div className="project-file-tabs">{repair.result.changed_files.map(p =>
+                <button key={p} className={repairFile === p ? "active" : ""}
+                  onClick={() => setRepairFile(p)}>{p}</button>)}</div>
+              <pre className="project-code">{repair.result.candidate.files.find(
+                f => f.path === (repairFile ?? repair.result?.changed_files[0]))?.content}</pre>
+              <p className="project-warning">Not executed, not tested. Existing tests are unchanged.</p>
+              <button className="project-approve" disabled={busy}
+                onClick={() => void promoteRepair()}>Create reviewable repair revision →</button>
+            </>}
+            </section>}
         </>}
       </div>}
-      <footer className="ai-footer">Guarded Python unittest verification only. No shell, browser, auto-repair, deployment, or unattended completion.</footer>
+      <footer className="ai-footer">Guarded Python unittest verification and reviewable, local-only repair proposals. No shell, browser, automatic patch application, or unattended completion.</footer>
     </main>
   </div>;
 }

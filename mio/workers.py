@@ -18,6 +18,7 @@ from mio.llm import ModelRouter
 from mio.memory import recent_history, relevant_notes
 from mio.project_tasks import apply_project, draft_project
 from mio.project_verification_tasks import verify_project_task
+from mio.repair_tasks import propose_project_repair
 from mio.supervisor import supervise
 
 IGNORED_DIRS = {
@@ -165,6 +166,10 @@ async def run_task(sessions: sessionmaker, task_id: str, workspace: Path,
                 raise ValueError("Sandbox verification is disabled")
             await asyncio.to_thread(verify_project_task, sessions, task_id,
                                     router.settings.mio_project_root)
+        elif task.kind == "project_repair":
+            if router is None or not router.settings.mio_enable_sandbox_verify:
+                raise ValueError("Sandbox repair proposals are disabled")
+            await propose_project_repair(sessions, task_id, router.settings)
         elif task.kind == "ai_chat":
             if router is None:
                 raise ValueError("Model router not configured")

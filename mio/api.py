@@ -23,8 +23,14 @@ from mio.database import (
     utcnow,
 )
 from mio.llm import ModelRouter
-from mio.project_mode import MAX_REQUIREMENTS, ProjectPolicyError, check_private_root
+from mio.project_mode import (
+    MAX_REQUIREMENTS,
+    ProjectPolicyError,
+    check_private_root,
+    verify_existing_project,
+)
 from mio.project_tasks import mark_project_canceled_for_task
+from mio.repair_tasks import failed_verification
 from mio.workers import reset_interrupted_tasks, worker_loop
 
 
@@ -288,6 +294,108 @@ def create_app(config: Settings | None = None) -> FastAPI:
             db.add(task)
             db.flush()
             return serialize_task(task)
+
+    @app.get("/api/projects/{project_id}/repair", dependencies=[Depends(require_token)])
+    def get_repair_proposal(project_id: str, request: Request):
+        require_project_feature()
+        with request.app.state.sessions() as db:
+            if db.get(Project, project_id) is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            proposal = db.scalar(select(Task).where(
+                Task.kind == "project_repair", Task.prompt == project_id,
+            ).order_by(Task.created_at.desc(), Task.id.desc()))
+            return serialize_task(proposal) if proposal else {"status": "not_run", "result": None}
+
+    @app.post("/api/projects/{project_id}/repair", status_code=202,
+              dependencies=[Depends(require_token)])
+    def request_repair_proposal(project_id: str, payload: ProjectApply, request: Request):
+        require_project_feature()
+        if not settings.mio_enable_sandbox_verify or not settings.mio_local_model:
+            raise HTTPException(status_code=409, detail="Repair requires enabled sandbox and local model")
+        # Approval is intentional for a local model call, never a paid/cloud request.
+        with request.app.state.sessions.begin() as db:
+            project = db.get(Project, project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            if project.status != "completed" or not project.draft_json:
+                raise HTTPException(status_code=409, detail="Approve project before proposing repairs")
+            try:
+                failed_verification(db, project_id)
+            except ProjectPolicyError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            existing = db.scalar(select(Task).where(
+                Task.kind == "project_repair", Task.prompt == project_id,
+            ).order_by(Task.created_at.desc(), Task.id.desc()))
+            if existing is not None:
+                raise HTTPException(status_code=409, detail="A repair proposal already exists for this project")
+            task = Task(kind="project_repair", prompt=project_id, status="queued")
+            db.add(task)
+            db.flush()
+            return serialize_task(task)
+
+    @app.post("/api/projects/{project_id}/repair/use", status_code=201,
+              dependencies=[Depends(require_token)])
+    def create_repair_revision(project_id: str, payload: ProjectApply, request: Request):
+        require_project_feature()
+        with request.app.state.sessions() as db:
+            original = db.get(Project, project_id)
+            if original is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            proposal = db.scalar(select(Task).where(
+                Task.kind == "project_repair", Task.prompt == project_id,
+            ).order_by(Task.created_at.desc(), Task.id.desc()))
+            if original.status != "completed" or proposal is None or proposal.status != "completed":
+                raise HTTPException(status_code=409, detail="No completed repair proposal")
+            result = json.loads(proposal.result_json or "{}")
+            try:
+                verification = failed_verification(db, project_id)
+                if verification.id != result.get("verification_task_id"):
+                    raise ProjectPolicyError("Repair proposal is based on an outdated failure")
+                draft = json.loads(original.draft_json or "{}")
+                verified = verify_existing_project(settings.mio_project_root, project_id, draft)
+                if verified is None:
+                    raise ProjectPolicyError("Approved original is missing")
+                candidate = result["candidate"]
+                # Revalidate untrusted persisted model output.
+                from mio.project_mode import validate_draft
+                checked = validate_draft(json.dumps({"plan": candidate["plan"],
+                                                     "files": candidate["files"]}))
+                old_tests = {x["path"]: x["sha256"] for x in draft["files"]
+                             if x["path"].rsplit("/", 1)[-1].startswith("test_")}
+                new_tests = {x["path"]: x["sha256"] for x in checked["files"]
+                             if x["path"].rsplit("/", 1)[-1].startswith("test_")}
+                if old_tests != new_tests:
+                    raise ProjectPolicyError("Repair cannot change original tests")
+                original_files = {x["path"]: x["sha256"] for x in draft["files"]}
+                candidate_files = {x["path"]: x["sha256"] for x in checked["files"]}
+                modified = {p for p in candidate_files
+                            if candidate_files[p] != original_files.get(p)}
+                reported = result.get("changed_files")
+                if (set(candidate_files) != set(original_files)
+                        or not isinstance(reported, list)
+                        or not 1 <= len(modified) <= 2
+                        or modified != set(reported)
+                        or any(not p.endswith(".py") or
+                               p.rsplit("/", 1)[-1].startswith("test_") for p in modified)):
+                    raise ProjectPolicyError("Repair proposal changed unapproved files")
+                if result.get("review_required") is not True:
+                    raise ProjectPolicyError("Repair requires explicit review")
+            except (KeyError, TypeError, ValueError, ProjectPolicyError) as exc:
+                raise HTTPException(status_code=409, detail="Repair proposal validation failed") from exc
+            title = ("Repair of " + original.title)[:140]
+            requirements = original.requirements
+        # A unique revision project is created, without modifying original files.
+        # One proposal can only be promoted once; serialize with the same DB write transaction.
+        with request.app.state.sessions.begin() as db:
+            proposal = db.get(Task, proposal.id)
+            if proposal is None or proposal.status != "completed":
+                raise HTTPException(status_code=409, detail="Proposal already used")
+            proposal.status = "promoted"
+            project = Project(title=title, requirements=requirements, status="review",
+                              draft_json=json.dumps(checked, ensure_ascii=False))
+            db.add(project)
+            db.flush()
+            return serialize_project(project, include_draft=True)
 
     @app.post("/api/projects/{project_id}/apply", status_code=202,
               dependencies=[Depends(require_token)])
