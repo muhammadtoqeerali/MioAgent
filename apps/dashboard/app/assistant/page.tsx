@@ -111,6 +111,7 @@ export default function Assistant() {
     <aside className="ai-nav">
       <div className="ai-brand">✦ &nbsp; MioAgent <small>PHASE 2 INTELLIGENCE</small></div>
       <a className="ai-back" href="/">← System dashboard</a>
+      <a className="ai-back" href="/projects">▣ Project Mode →</a>
       <button className="ai-new" onClick={() => { setActive(null); setMessages([]); setRun(null); setError(""); }}>＋ New conversation</button>
       <div className="ai-subtitle">CONVERSATIONS</div>
       {conversations.map(c => <button key={c.id} className={`ai-conv ${active === c.id ? "selected" : ""}`}

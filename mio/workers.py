@@ -16,6 +16,7 @@ from mio.config import Settings
 from mio.database import AIJob, ChatMessage, Task, utcnow
 from mio.llm import ModelRouter
 from mio.memory import recent_history, relevant_notes
+from mio.project_tasks import apply_project, draft_project
 from mio.supervisor import supervise
 
 IGNORED_DIRS = {
@@ -148,7 +149,17 @@ async def run_task(sessions: sessionmaker, task_id: str, workspace: Path,
     if task is None:
         return
     try:
-        if task.kind == "ai_chat":
+        if task.kind == "project_draft":
+            if router is None:
+                raise ValueError("Project Mode requires a configured model")
+            # Router carries validated administrator settings.
+            await draft_project(sessions, task_id, router.settings)
+        elif task.kind == "project_apply":
+            if router is None:
+                raise ValueError("Project Mode requires configured settings")
+            await asyncio.to_thread(apply_project, sessions, task_id,
+                                    router.settings.mio_project_root)
+        elif task.kind == "ai_chat":
             if router is None:
                 raise ValueError("Model router not configured")
             await run_ai_task(sessions, task_id, router)

@@ -12,8 +12,19 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from mio.config import Settings
-from mio.database import AIJob, ChatMessage, Conversation, MemoryNote, Task, create_database, utcnow
+from mio.database import (
+    AIJob,
+    ChatMessage,
+    Conversation,
+    MemoryNote,
+    Project,
+    Task,
+    create_database,
+    utcnow,
+)
 from mio.llm import ModelRouter
+from mio.project_mode import MAX_REQUIREMENTS, ProjectPolicyError, check_private_root
+from mio.project_tasks import mark_project_canceled_for_task
 from mio.workers import reset_interrupted_tasks, worker_loop
 
 
@@ -25,6 +36,28 @@ class TaskCreate(BaseModel):
 class AskCreate(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = Field(default=None, max_length=36)
+
+
+class ProjectCreate(BaseModel):
+    title: str = Field(min_length=3, max_length=140)
+    requirements: str = Field(min_length=20, max_length=MAX_REQUIREMENTS)
+
+
+class ProjectApply(BaseModel):
+    approved: Literal[True]
+
+
+def serialize_project(project: Project, *, include_draft: bool = False) -> dict:
+    result = {
+        "id": project.id, "title": project.title, "requirements": project.requirements,
+        "status": project.status, "workspace": project.workspace_path,
+        "draft_task_id": project.draft_task_id, "apply_task_id": project.apply_task_id,
+        "error": project.error, "created_at": project.created_at.isoformat(),
+        "updated_at": project.updated_at.isoformat(),
+    }
+    if include_draft:
+        result["draft"] = json.loads(project.draft_json) if project.draft_json else None
+    return result
 
 
 class RememberCreate(BaseModel):
@@ -87,6 +120,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
             "mode": "local", "ai_model_connected": model_state["local_reachable"],
             "ai_model_configured": model_state["configured"],
             "voice_enabled": False, "computer_control_enabled": False,
+            "project_mode_enabled": settings.mio_enable_project_mode,
+            "project_mode_capability": "reviewed_source_drafts_only" if settings.mio_enable_project_mode else "off",
             "task_counts": {name: count for name, count in values},
             "timestamp": datetime.now(UTC).isoformat(),
         }
@@ -177,6 +212,66 @@ def create_app(config: Settings | None = None) -> FastAPI:
             db.delete(note)
             return {"deleted": True}
 
+    def require_project_feature() -> None:
+        if not settings.mio_enable_project_mode:
+            raise HTTPException(status_code=409, detail="Project Mode disabled by administrator")
+
+    @app.get("/api/projects", dependencies=[Depends(require_token)])
+    def list_projects(request: Request):
+        require_project_feature()
+        with request.app.state.sessions() as db:
+            rows = db.scalars(select(Project).order_by(Project.created_at.desc()).limit(50)).all()
+            return {"projects": [serialize_project(row) for row in rows]}
+
+    @app.get("/api/projects/{project_id}", dependencies=[Depends(require_token)])
+    def get_project(project_id: str, request: Request):
+        require_project_feature()
+        with request.app.state.sessions() as db:
+            project = db.get(Project, project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            return serialize_project(project, include_draft=True)
+
+    @app.post("/api/projects", status_code=202, dependencies=[Depends(require_token)])
+    def create_project(payload: ProjectCreate, request: Request):
+        require_project_feature()
+        if not router.configured():
+            raise HTTPException(status_code=409, detail="Configure a local AI model first")
+        if not settings.mio_local_model:
+            raise HTTPException(status_code=409, detail="Project Mode requires a local model")
+        try:
+            check_private_root(settings.mio_project_root)
+        except (OSError, ProjectPolicyError) as exc:
+            raise HTTPException(status_code=409, detail=f"Project storage not ready: {exc}") from exc
+        with request.app.state.sessions.begin() as db:
+            project = Project(title=payload.title.strip(),
+                              requirements=payload.requirements.strip(), status="drafting")
+            db.add(project)
+            db.flush()
+            task = Task(kind="project_draft", prompt=project.id, status="queued")
+            db.add(task)
+            db.flush()
+            project.draft_task_id = task.id
+            return serialize_project(project)
+
+    @app.post("/api/projects/{project_id}/apply", status_code=202,
+              dependencies=[Depends(require_token)])
+    def approve_project(project_id: str, payload: ProjectApply, request: Request):
+        require_project_feature()
+        with request.app.state.sessions.begin() as db:
+            project = db.get(Project, project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            if project.status != "review" or not project.draft_json:
+                raise HTTPException(status_code=409, detail="Project is not awaiting approval")
+            project.status = "applying"
+            project.updated_at = utcnow()
+            task = Task(kind="project_apply", prompt=project.id, status="queued")
+            db.add(task)
+            db.flush()
+            project.apply_task_id = task.id
+            return serialize_project(project)
+
     @app.get("/api/tasks", dependencies=[Depends(require_token)])
     def list_tasks(request: Request):
         with request.app.state.sessions() as db:
@@ -212,6 +307,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             if task.status in {"queued", "running"}:
                 task.status = "canceled"
                 task.updated_at = datetime.now(UTC)
+                mark_project_canceled_for_task(db, task_id)
             db.flush()
             return serialize_task(task)
 

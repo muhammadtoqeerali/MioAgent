@@ -24,3 +24,7 @@ class Settings(BaseSettings):
     mio_cloud_model: str = ""
     mio_cloud_api_key: SecretStr = SecretStr("")
     mio_model_route: Literal["auto", "local", "cloud"] = "auto"
+
+    # v0.3: off by default; project drafts do not execute generated code.
+    mio_enable_project_mode: bool = False
+    mio_project_root: Path = Path("/var/tmp/mioagent-private-projects")

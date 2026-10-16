@@ -1,0 +1,155 @@
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+type DraftFile = { path: string; content: string; bytes: number; sha256: string };
+type Draft = { plan: string[]; files: DraftFile[]; checks: string[]; verification: string;
+  file_count: number; total_bytes: number };
+type Project = { id: string; title: string; requirements: string; status: string;
+  workspace: string | null; draft_task_id: string | null; apply_task_id: string | null;
+  error: string | null; draft?: Draft | null };
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`/api/proxy/${path}`, { cache: "no-store", ...init });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(payload?.detail ?? `Request failed (${response.status})`);
+  }
+  return response.json() as Promise<T>;
+}
+
+export default function ProjectsPage() {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [active, setActive] = useState<string | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
+  const [title, setTitle] = useState("");
+  const [requirements, setRequirements] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const listing = await api<{ projects: Project[] }>("projects");
+      setProjects(listing.projects);
+      if (active) {
+        const detail = await api<Project>(`projects/${encodeURIComponent(active)}`);
+        setProject(detail);
+      }
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Project backend unavailable");
+    }
+  }, [active]);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!active || !project || !["drafting", "applying"].includes(project.status)) return;
+    const interval = setInterval(() => void refresh(), 1600);
+    return () => clearInterval(interval);
+  }, [active, project, refresh]);
+
+  async function create() {
+    if (title.trim().length < 3 || requirements.trim().length < 20 || busy) return;
+    setBusy(true); setError("");
+    try {
+      const created = await api<Project>("projects", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: title.trim(), requirements: requirements.trim() }),
+      });
+      setActive(created.id); setProject(created); setTitle(""); setRequirements("");
+      await api<{ projects: Project[] }>("projects").then(data => setProjects(data.projects));
+    } catch (e) { setError(e instanceof Error ? e.message : "Cannot create project"); }
+    finally { setBusy(false); }
+  }
+
+  async function approve() {
+    if (!active || !project || project.status !== "review" || busy) return;
+    setBusy(true); setError("");
+    try {
+      const result = await api<Project>(`projects/${encodeURIComponent(active)}/apply`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approved: true }),
+      });
+      setProject(result); await refresh();
+    } catch (e) { setError(e instanceof Error ? e.message : "Approval could not be applied"); }
+    finally { setBusy(false); }
+  }
+
+  async function cancel() {
+    const taskId = project?.status === "drafting" ? project?.draft_task_id : project?.apply_task_id;
+    if (!taskId || busy) return;
+    setBusy(true); setError("");
+    try { await api(`tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" }); await refresh(); }
+    catch (e) { setError(e instanceof Error ? e.message : "Cancellation failed"); }
+    finally { setBusy(false); }
+  }
+
+  const shown = project?.draft?.files.find(f => f.path === selectedFile) ?? project?.draft?.files[0];
+  return <div className="ai-shell">
+    <aside className="ai-nav">
+      <div className="ai-brand">✦ &nbsp; MioAgent <small>PROJECT MODE · EARLY RELEASE</small></div>
+      <a className="ai-back" href="/assistant">← Chat Mode</a>
+      <a className="ai-back" href="/">← Command center</a>
+      <div className="ai-subtitle">PROJECTS</div>
+      <button className="ai-new" onClick={() => { setActive(null); setProject(null); setError(""); }}>
+        ＋ New project
+      </button>
+      {projects.map(p => <button key={p.id} className={`ai-conv ${active === p.id ? "selected" : ""}`}
+        onClick={() => { setActive(p.id); setProject(p); setSelectedFile(null); }}>
+        {p.title} · {p.status}
+      </button>)}
+    </aside>
+    <main className="ai-main">
+      <div className="ai-header"><div><strong>Autonomous Project Mode</strong>
+        <div className="ai-muted">Local AI draft → static checks → explicit approval → private source files</div>
+      </div><div className="ai-chip">No shell execution · No paid APIs</div></div>
+      {error && <div className="ai-error" role="alert">{error}</div>}
+      {!active ? <div className="ai-memory project-form">
+        <h2>Start a coding project</h2>
+        <p>This first Project Mode generates small project source files for review. It does not run code,
+          browse the internet, install packages, or push to GitHub. Only explicitly approved drafts are saved.
+          Project Mode must be enabled by the workstation administrator.</p>
+        <label className="field-label" htmlFor="project-title">PROJECT NAME</label>
+        <input id="project-title" value={title} maxLength={140}
+          onChange={e => setTitle(e.target.value)} placeholder="My Python utility" />
+        <label className="field-label" htmlFor="project-requirements">REQUIREMENTS</label>
+        <textarea id="project-requirements" value={requirements} maxLength={6000}
+          onChange={e => setRequirements(e.target.value)}
+          placeholder="Describe what to implement, the files you need, and acceptance criteria..." />
+        <button disabled={busy || title.trim().length < 3 || requirements.trim().length < 20}
+          onClick={() => void create()}>{busy ? "Preparing…" : "Generate reviewable draft →"}</button>
+      </div> : <div className="ai-memory project-detail">
+        <div className="project-heading"><h2>{project?.title ?? "Loading project…"}</h2>
+          <span className="state">{project?.status ?? "loading"}</span></div>
+        <p>{project?.requirements}</p>
+        {project?.error && <div className="ai-error" role="alert">{project.error}</div>}
+        {["drafting", "applying"].includes(project?.status ?? "") && <div className="ai-running">
+          <strong>{project?.status === "drafting" ? "Local model drafting project files…" : "Saving approved files…"}</strong>
+          <p>Task status is stored persistently. Refreshing this page will not create a duplicate task.</p>
+          <button className="ai-cancel" disabled={busy} onClick={() => void cancel()}>Cancel</button>
+        </div>}
+        {project?.draft && <>
+          <div className="project-summary"><div><strong>{project.draft.file_count} files</strong>
+            <small>{project.draft.total_bytes.toLocaleString()} generated bytes</small></div>
+            <div><strong>Static checks</strong><small>{project.draft.checks.length} checks</small></div></div>
+          <h3>Proposed implementation</h3>
+          <ol>{project.draft.plan.map((step, i) => <li key={i}>{step}</li>)}</ol>
+          <h3>Generated file preview</h3>
+          <div className="project-file-tabs">{project.draft.files.map(file =>
+            <button key={file.path} className={shown?.path === file.path ? "active" : ""}
+              onClick={() => setSelectedFile(file.path)}>{file.path}</button>)}</div>
+          {shown && <pre className="project-code">{shown.content}</pre>}
+          <p className="project-warning">{project.draft.verification}. Review every file before approving.
+            No executable sandbox is enabled in this milestone.</p>
+          {project.status === "review" && <button className="project-approve" disabled={busy}
+            onClick={() => void approve()}>{busy ? "Applying…" : "I approve writing these files →"}</button>}
+          {project.status === "completed" && <p className="project-success">
+            Approved source was saved to <code>{project.workspace}</code>. No tests or commands have been run.
+          </p>}
+        </>}
+      </div>}
+      <footer className="ai-footer">Early release: no shell, browser, deployment, or unattended project completion yet.</footer>
+    </main>
+  </div>;
+}

@@ -3,6 +3,13 @@ import { NextRequest, NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 async function forward(req: NextRequest, path: string[]) {
+  // PUBLIC HOSTING SECURITY GATE: Vercel is only a UI shell until an authenticated
+  // private workstation connector + user session authorization are implemented.
+  // Never forward the backend bearer token from an anonymously reachable route.
+  if (process.env.VERCEL === "1") {
+    return NextResponse.json({ detail: "Remote MioAgent controls are disabled until secure access is configured" },
+      { status: 503, headers: { "Cache-Control": "no-store" } });
+  }
   if (req.method !== "GET" && req.method !== "HEAD") {
     const origin = req.headers.get("origin");
     const host = req.headers.get("host");

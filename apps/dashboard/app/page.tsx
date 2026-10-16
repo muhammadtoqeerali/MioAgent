@@ -98,6 +98,7 @@ export default function Home() {
         <div className="nav-label">WORKSPACE</div>
         <button className={`nav-item ${view === "overview" ? "active" : ""}`} onClick={() => setView("overview")}><span>◈</span> Overview</button>
         <a className="nav-item" href="/assistant"><span>✦</span> AI Assistant</a>
+        <a className="nav-item" href="/projects"><span>▣</span> Project Mode</a>
         <button className={`nav-item ${view === "activity" ? "active" : ""}`} onClick={() => setView("activity")}><span>▤</span> Task activity</button>
         <button className={`nav-item ${view === "settings" ? "active" : ""}`} onClick={() => setView("settings")}><span>⚙</span> Capabilities</button>
         <div className="sidebar-foot"><span className="status-dot" /> Local-first foundation <small>v0.2.0 · Phase 2</small></div>

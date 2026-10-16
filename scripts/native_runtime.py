@@ -338,6 +338,21 @@ def start() -> None:
             "MIO_ALLOW_CLOUD": "false",
             "MIO_CLOUD_API_KEY": "",
         })
+        # Project Mode requires a manually enabled owner-private flag. Never trust
+        # inherited MIO_ENABLE_PROJECT_MODE / MIO_PROJECT_ROOT environment values.
+        marker = RUNTIME / "project-mode-enabled"
+        feature_enabled = False
+        if marker.exists() or marker.is_symlink():
+            info = marker.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) & 0o077
+                    or marker.read_text(encoding="utf-8") != "enabled\n"):
+                raise RuntimeError("Project Mode flag must be an owner-private approved file")
+            feature_enabled = True
+        env.update({
+            "MIO_ENABLE_PROJECT_MODE": "true" if feature_enabled else "false",
+            "MIO_PROJECT_ROOT": str(RUNTIME / "projects"),
+        })
         # Fix: previously configure_model.py wrote model.env but no process
         # actually loaded it. The supervisor therefore stayed unconfigured.
         env.update(load_model_config())
