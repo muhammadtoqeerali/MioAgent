@@ -6,7 +6,7 @@ No arbitrary code execution, shell access, web browsing, or LLM agent calls exis
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import select, update
@@ -54,7 +54,7 @@ def reset_interrupted_tasks(sessions: sessionmaker) -> None:
     # Phase-1 tasks are intentionally idempotent; safe to requeue after an unclean restart.
     with sessions.begin() as db:
         db.execute(update(Task).where(Task.status == "running").values(
-            status="queued", progress=0, error=None, updated_at=datetime.now(timezone.utc)
+            status="queued", progress=0, error=None, updated_at=datetime.now(UTC)
         ))
 
 
@@ -67,7 +67,7 @@ def claim_task(sessions: sessionmaker) -> str | None:
         if task is None:
             return None
         task.status = "running"
-        task.updated_at = datetime.now(timezone.utc)
+        task.updated_at = datetime.now(UTC)
         db.flush()
         return task.id
 
@@ -92,7 +92,7 @@ def update_task(sessions: sessionmaker, task_id: str, *, progress: int | None = 
             task.error = error[:2000]
         if status is not None:
             task.status = status
-        task.updated_at = datetime.now(timezone.utc)
+        task.updated_at = datetime.now(UTC)
         return True
 
 
@@ -121,7 +121,7 @@ async def run_task(sessions: sessionmaker, task_id: str, workspace: Path,
                         result={"text": task.prompt}, status="completed")
         else:
             raise ValueError("Task kind is not permitted")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — worker must record unexpected failures
         update_task(sessions, task_id, status="failed", error=str(exc))
 
 

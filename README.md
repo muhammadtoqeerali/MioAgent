@@ -65,7 +65,7 @@ curl -fsS -H "Authorization: Bearer ${MIO_API_TOKEN}" -H 'Content-Type: applicat
   http://127.0.0.1:8000/api/tasks
 ```
 
-The private `~/.config/mioagent/.env` file contains credentials. It is intentionally outside the project’s potentially permissive HDD mount. **Never publish it or paste its contents into chats.**
+The private `~/.config/mioagent/.env` file contains credentials. **Never publish it or paste its contents into chats.** On the supplied workstation, `$HOME` and the MioAgent source both appear to live under a mounted NTFS/FUSE volume. Thus storing `.env` outside the repository alone is **not proof of Unix file-permission protection**. Inspect `findmnt -T "$HOME/.config/mioagent/.env"` and migrate secrets to an owner-protected native Linux filesystem before allowing untrusted local users, remote access, or sensitive tools. See `docs/PHASE_1_REPAIR.md` for more detail.
 
 ## Developer tests
 

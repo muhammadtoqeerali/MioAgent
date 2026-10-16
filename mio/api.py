@@ -3,7 +3,7 @@ import asyncio
 import json
 import secrets
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -69,7 +69,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
             "mode": "local", "ai_model_connected": False, "voice_enabled": False,
             "computer_control_enabled": False,
             "task_counts": {name: count for name, count in values},
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
     @app.get("/api/tasks", dependencies=[Depends(require_token)])
@@ -106,9 +106,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Task not found")
             if task.status in {"queued", "running"}:
                 task.status = "canceled"
-                task.updated_at = datetime.now(timezone.utc)
+                task.updated_at = datetime.now(UTC)
             db.flush()
             return serialize_task(task)
 
     return app
-

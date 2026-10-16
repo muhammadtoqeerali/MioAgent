@@ -1,6 +1,6 @@
 # ADR 0001 — Adopt MioAgent master plan 1.0
 
-**Date:** 2026-10-15  
+**Date:** 2026-10-15
 **Status:** Accepted
 
 ## Decision

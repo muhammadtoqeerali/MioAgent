@@ -26,3 +26,8 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# The workstation source tree is on NTFS/FUSE, which reports .py files as executable.
+# Git index normalization sets regular source files to non-executable where possible.
+ignore = ["EXE002"]
