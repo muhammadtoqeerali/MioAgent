@@ -267,6 +267,44 @@ def create_app(config: Settings | None = None) -> FastAPI:
             project.draft_task_id = task.id
             return serialize_project(project)
 
+    @app.post("/api/projects/{project_id}/retry-draft", status_code=202,
+              dependencies=[Depends(require_token)])
+    def retry_failed_draft(project_id: str, payload: ProjectApply, request: Request):
+        """Operator-authorized, once-only recovery of a failed local model draft.
+
+        Previous failed task is retained for forensic inspection; never change
+        approved source or silently retry any non-model project failure.
+        """
+        require_project_feature()
+        if not settings.mio_local_model:
+            raise HTTPException(status_code=409, detail="Local model not configured")
+        with request.app.state.sessions.begin() as db:
+            project = db.get(Project, project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            if (project.status != "failed" or project.draft_json is not None
+                    or project.workspace_path is not None or project.apply_task_id is not None
+                    or not project.draft_task_id or not project.error
+                    or "local model" not in project.error):
+                raise HTTPException(status_code=409, detail="Not a failed local model draft")
+            previous = db.get(Task, project.draft_task_id)
+            if (previous is None or previous.kind != "project_draft"
+                    or previous.prompt != project.id or previous.status != "failed"):
+                raise HTTPException(status_code=409, detail="Previous draft task is not safely failed")
+            count = db.scalar(select(func.count()).select_from(Task).where(
+                Task.kind == "project_draft", Task.prompt == project.id,
+            ))
+            if count != 1:
+                raise HTTPException(status_code=409, detail="A draft retry already exists")
+            task = Task(kind="project_draft", prompt=project.id, status="queued")
+            db.add(task)
+            db.flush()
+            project.status = "drafting"
+            project.error = None
+            project.draft_task_id = task.id
+            project.updated_at = utcnow()
+            return serialize_project(project)
+
     @app.get("/api/projects/{project_id}/verification", dependencies=[Depends(require_token)])
     def get_project_verification(project_id: str, request: Request):
         require_project_feature()

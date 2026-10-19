@@ -61,6 +61,15 @@ class EngineeringAPI(LocalAPI):
             raise EngineeringStop("Created project is not drafting")
         return result
 
+    def retry_failed_draft(self, project_id: str) -> dict:
+        """Requeue one previously failed draft on the same project identity."""
+        if not ID_PATTERN.fullmatch(project_id):
+            raise EngineeringStop("Invalid recovery project ID")
+        result = self.call(f"projects/{project_id}/retry-draft", post=True)
+        if result.get("id") != project_id or result.get("status") != "drafting":
+            raise EngineeringStop("Draft retry did not return the same project")
+        return result
+
     def lock_tests(self, project_id: str, goal: Goal) -> dict:
         if not ID_PATTERN.fullmatch(project_id):
             raise EngineeringStop("Invalid project ID for acceptance locking")
@@ -153,6 +162,12 @@ def execute_goal(api: EngineeringAPI, goal: Goal, plan: dict, *, record,
     created = api.create_project(goal, plan)
     project_id = created["id"]
     record({"event": "project_created", "project_id": project_id})
+    return finish_goal(api, goal, project_id, record=record, repair_runner=repair_runner)
+
+
+def finish_goal(api: EngineeringAPI, goal: Goal, project_id: str, *, record,
+                repair_runner=run_cycle) -> dict:
+    """Continue from the draft stage; no plan or project is recreated."""
     wait_project(api, project_id, "review")
     review = api.lock_tests(project_id, goal)
     evidence = validate_review_draft(review, goal)
@@ -185,37 +200,105 @@ def execute_goal(api: EngineeringAPI, goal: Goal, plan: dict, *, record,
     }
 
 
+def validated_resume_report(path: Path, goal: Goal) -> tuple[dict, dict, str]:
+    """Only re-use a single private stopped plan for exactly the same goal."""
+    import os
+    import stat
+
+    if not path.is_file() or path.is_symlink():
+        raise EngineeringStop("No private engineering run exists to resume")
+    info = path.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise EngineeringStop("Recovery report must be user-owned and private")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(report, dict) or report.get("goal_sha256") != goal.digest
+            or report.get("state") != "stopped" or report.get("planner_model") != "gpt-oss:20b"):
+        raise EngineeringStop("Only a stopped, matching local-model report can be resumed")
+    events = report.get("events")
+    if not isinstance(events, list):
+        raise EngineeringStop("Recovery event history is missing")
+    created = [e for e in events if isinstance(e, dict) and e.get("event") == "project_created"]
+    if (len(created) != 1 or any(not isinstance(e, dict) or e.get("event") not in
+                                {"plan_validated", "project_created"} for e in events)):
+        raise EngineeringStop("Run advanced beyond draft stage; manual review required")
+    project_id = created[0].get("project_id")
+    if not isinstance(project_id, str) or not ID_PATTERN.fullmatch(project_id):
+        raise EngineeringStop("Recovery project ID invalid")
+    saved = report.get("plan")
+    if not isinstance(saved, dict) or not isinstance(saved.get("tasks"), list):
+        raise EngineeringStop("Saved engineering plan is invalid")
+    clean_tasks = [{k: t[k] for k in ("role", "action", "criteria")}
+                   for t in saved["tasks"] if isinstance(t, dict)
+                   and all(k in t for k in ("role", "action", "criteria"))]
+    plan = parse_plan(json.dumps({"tasks": clean_tasks}), goal)
+    if plan != saved:
+        raise EngineeringStop("Saved plan has changed since validation")
+    return report, plan, project_id
+
+
+def resume_goal(api: EngineeringAPI, goal: Goal, plan: dict, project_id: str,
+                *, record, repair_runner=run_cycle) -> dict:
+    state = api.call("status")
+    if not state.get("project_mode_enabled") or not state.get("sandbox_verify_enabled"):
+        raise EngineeringStop("Project Mode and sandbox must remain enabled")
+    original = api.call(f"projects/{project_id}")
+    if (original.get("title") != goal.title
+            or original.get("requirements") != goal.project_requirements(plan)
+            or original.get("status") != "failed" or original.get("draft") is not None
+            or original.get("workspace") is not None or original.get("apply_task_id") is not None
+            or "local model" not in str(original.get("error", ""))):
+        raise EngineeringStop("Failed project does not match saved goal and draft failure")
+    api.retry_failed_draft(project_id)
+    record({"event": "failed_draft_requeued", "project_id": project_id})
+    return finish_goal(api, goal, project_id, record=record, repair_runner=repair_runner)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("goal", type=Path, help="JSON goal contract with user-authored tests")
     parser.add_argument("--execute", action="store_true", help="Delegate bounded project write/test/repair")
+    parser.add_argument("--resume", action="store_true", help="Once-only recover a failed local draft")
     args = parser.parse_args()
     try:
+        if args.resume and not args.execute:
+            raise EngineeringStop("Recovery requires explicit --execute --resume")
         if not args.goal.is_file() or args.goal.is_symlink():
             raise EngineeringStop("Provide an existing regular goal JSON file")
         goal = parse_goal(args.goal.read_bytes())
         setup_runtime()
-        plan, model = asyncio.run(local_plan(goal))
-        print(json.dumps({"model": model, "plan": plan,
-                          "goal_sha256": goal.digest}, indent=2), flush=True)
-        if not args.execute:
-            print("PLAN ONLY: no files, projects or tests changed. Add --execute to delegate this goal.")
-            return
         runs = RUNTIME / "engineering-runs"
-        runs.mkdir(mode=0o700, exist_ok=True)
         report_path = runs / f"{goal.digest}.json"
-        if report_path.exists() or report_path.is_symlink():
-            raise EngineeringStop("A run already exists for this goal; inspect its private report")
-        report = {"goal_sha256": goal.digest, "planner_model": model,
-                  "plan": plan, "events": [], "state": "starting"}
-        save_atomic_private(report_path, report)
+        if args.resume:
+            report, plan, project_id = validated_resume_report(report_path, goal)
+            model = "gpt-oss:20b"
+            print(json.dumps({"resume_project": project_id, "model": model,
+                              "plan": plan, "goal_sha256": goal.digest}, indent=2), flush=True)
+        else:
+            if args.execute and (report_path.exists() or report_path.is_symlink()):
+                raise EngineeringStop("This goal already has a report; use --execute --resume for a failed draft")
+            plan, model = asyncio.run(local_plan(goal))
+            print(json.dumps({"model": model, "plan": plan,
+                              "goal_sha256": goal.digest}, indent=2), flush=True)
+            if not args.execute:
+                print("PLAN ONLY: no files, projects or tests changed. Add --execute to delegate this goal.")
+                return
+            runs.mkdir(mode=0o700, exist_ok=True)
+            report = {"goal_sha256": goal.digest, "planner_model": model,
+                      "plan": plan, "events": [], "state": "starting"}
+            save_atomic_private(report_path, report)
 
         def record(event: dict) -> None:
             report["events"].append({**event, "timestamp_utc_seconds": int(time.time())})
             save_atomic_private(report_path, report)
 
         try:
-            result = execute_goal(EngineeringAPI(get_token()), goal, plan, record=record)
+            if args.resume:
+                report["state"] = "resuming"
+                save_atomic_private(report_path, report)
+                result = resume_goal(EngineeringAPI(get_token()), goal, plan,
+                                     project_id, record=record)
+            else:
+                result = execute_goal(EngineeringAPI(get_token()), goal, plan, record=record)
             report.update({"state": "finished", "result": result})
             save_atomic_private(report_path, report)
             print(json.dumps(result, indent=2))

@@ -83,7 +83,11 @@ class ModelRouter:
         for kind, base, model, key in self.providers():
             try:
                 # No ambient HTTP proxies or credentials; endpoints come from admin settings.
-                async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=6.0),
+                # Project drafting produces significantly more tokens than a short
+                # chat turn. Give that one operation enough inference time without
+                # holding every small chat request for four minutes.
+                deadline = 240.0 if max_tokens >= 2048 else 120.0
+                async with httpx.AsyncClient(timeout=httpx.Timeout(deadline, connect=6.0),
                                              follow_redirects=False, trust_env=False) as client:
                     reply = await client.post(
                         f"{base}/chat/completions",
@@ -102,9 +106,16 @@ class ModelRouter:
                 return Completion(text=value.strip(), model=model, provider=kind,
                                   input_tokens=usage.get("prompt_tokens"),
                                   output_tokens=usage.get("completion_tokens"))
-            except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
-                # Exclude exception text: upstream error bodies can contain private content.
-                failures.append(f"{kind} model unavailable ({type(exc).__name__})")
+            except httpx.HTTPStatusError as exc:
+                # HTTP status is safe telemetry; upstream bodies and headers may
+                # contain private prompts or service credentials. Never log them.
+                failures.append(f"{kind} model HTTP {exc.response.status_code}")
+            except httpx.TimeoutException:
+                failures.append(f"{kind} model timed out")
+            except httpx.HTTPError as exc:
+                failures.append(f"{kind} model transport {type(exc).__name__}")
+            except (ValueError, KeyError, IndexError) as exc:
+                failures.append(f"{kind} model invalid response ({type(exc).__name__})")
         raise ModelUnavailable("; ".join(failures) or "No permitted provider available")
 
     async def probe(self) -> dict:
