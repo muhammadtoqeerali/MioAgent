@@ -35,6 +35,67 @@ def mark_project_failure(sessions: sessionmaker, project_id: str, error: str) ->
             project.updated_at = utcnow()
 
 
+DRAFT_RETRIES = 2
+
+DRAFT_INSTRUCTIONS = (
+    "\n\nIMPORTANT DELIVERY REQUIREMENT: Return one JSON object with exactly "
+    "the fields plan and files. plan is an array of short step strings. "
+    "files MUST be a NONEMPTY array of objects with path and content strings. "
+    "Generate working APPLICATION source: at least one .py implementation file; "
+    "do not provide an explanation or empty files. Use 1-3 small application files. "
+    "If USER-OWNED IMMUTABLE TESTS appear in requirements, the trusted operator "
+    "adds those separately; you do not need to reproduce test files. "
+    "Keep generated code syntactically correct and under the documented budgets."
+)
+
+
+def _draft_retry_message(reason: str) -> str:
+    """Give only bounded validation feedback, never model-generated content."""
+    # Validation exceptions come from trusted policy text, not from an upstream
+    # HTTP body or the original model output. No arbitrary error text enters prompt.
+    permitted = {
+        "Draft must contain 1 to 6 files": "Include 1-3 real application file objects.",
+        "Plan must contain 1 to 8 steps": "Include 1-5 short plan step strings.",
+        "Model did not produce valid JSON": "Return one complete valid JSON object.",
+        "Model output must be a JSON object": "Return a JSON object, not a list.",
+    }
+    instruction = next((v for k, v in permitted.items() if reason.startswith(k)),
+                       "Correct the schema and syntax of the application draft.")
+    return (
+        "Your previous draft was rejected by the trusted local validator. "
+        + instruction + " Return ONLY complete JSON with plan and a nonempty files array. "
+        "Each file needs path and full source content, not placeholders. "
+        "Do not claim tests were run. The original user acceptance tests are inserted "
+        "separately and must not be changed."
+    )
+
+
+async def generate_validated_draft(router: ModelRouter, requirements: str) -> tuple[dict, object, int]:
+    """Bounded schema repair. No tool execution, no test mutation, no HTTP retry storm."""
+    messages = [
+        {"role": "system", "content": PROJECT_PLANNER + DRAFT_INSTRUCTIONS},
+        {"role": "user", "content": requirements},
+    ]
+    for attempt in range(1, DRAFT_RETRIES + 1):
+        completion = await router.complete(messages, max_tokens=3072)
+        try:
+            candidate = validate_draft(completion.text)
+            # The trusted preapproval acceptance endpoint will supply the tests.
+            # A draft without actual application Python is never enough here.
+            if not any(f["path"].endswith(".py")
+                       and not Path(f["path"]).name.startswith("test_")
+                       for f in candidate["files"]):
+                raise ProjectPolicyError("Draft has no application Python source")
+            return candidate, completion, attempt
+        except ProjectPolicyError as exc:
+            if attempt == DRAFT_RETRIES:
+                raise ProjectPolicyError(
+                    f"Model draft invalid after {DRAFT_RETRIES} attempts: {exc}"
+                ) from exc
+            messages.append({"role": "user", "content": _draft_retry_message(str(exc))})
+    raise ProjectPolicyError("Draft retry limit reached")
+
+
 async def draft_project(sessions: sessionmaker, task_id: str, settings: Settings) -> None:
     with sessions() as db:
         task = db.get(Task, task_id)
@@ -49,11 +110,9 @@ async def draft_project(sessions: sessionmaker, task_id: str, settings: Settings
         local_only = settings.model_copy(update={"mio_allow_cloud": False,
                                                   "mio_model_route": "local"})
         router = ModelRouter(local_only)
-        completion = await router.complete([
-            {"role": "system", "content": PROJECT_PLANNER},
-            {"role": "user", "content": requirements},
-        ], max_tokens=2048)
-        approved_candidate = validate_draft(completion.text)
+        approved_candidate, completion, attempts = await generate_validated_draft(
+            router, requirements,
+        )
         with sessions.begin() as db:
             task = db.get(Task, task_id)
             project = db.get(Project, project_id)
@@ -69,7 +128,8 @@ async def draft_project(sessions: sessionmaker, task_id: str, settings: Settings
                                            "total_bytes": approved_candidate["total_bytes"],
                                            "checks": approved_candidate["checks"],
                                            "model": completion.model,
-                                           "provider": completion.provider})
+                                           "provider": completion.provider,
+                                           "generation_attempts": attempts})
             task.progress = 100
             task.status = "completed"
             task.updated_at = utcnow()

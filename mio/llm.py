@@ -86,14 +86,14 @@ class ModelRouter:
                 # Project drafting produces significantly more tokens than a short
                 # chat turn. Give that one operation enough inference time without
                 # holding every small chat request for four minutes.
-                deadline = 240.0 if max_tokens >= 2048 else 120.0
+                deadline = 270.0 if max_tokens > 2048 else (240.0 if max_tokens >= 2048 else 120.0)
                 async with httpx.AsyncClient(timeout=httpx.Timeout(deadline, connect=6.0),
                                              follow_redirects=False, trust_env=False) as client:
                     reply = await client.post(
                         f"{base}/chat/completions",
                         headers={"Authorization": f"Bearer {key}"},
                         json={"model": model, "messages": messages,
-                              "stream": False, "max_tokens": min(max_tokens, 2048),
+                              "stream": False, "max_tokens": min(max_tokens, 3072),
                               "temperature": 0.2},
                     )
                     reply.raise_for_status()

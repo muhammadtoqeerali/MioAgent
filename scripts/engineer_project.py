@@ -35,7 +35,7 @@ from scripts.autonomous_repair import (
 from scripts.native_runtime import RUNTIME, get_token, load_model_config, setup_runtime
 
 API_ROOT = "http://127.0.0.1:8000/api"
-DRAFT_TIMEOUT = 240
+DRAFT_TIMEOUT = 660
 
 
 class EngineeringAPI(LocalAPI):
@@ -253,22 +253,106 @@ def resume_goal(api: EngineeringAPI, goal: Goal, plan: dict, project_id: str,
     return finish_goal(api, goal, project_id, record=record, repair_runner=repair_runner)
 
 
+def validated_restart_report(path: Path, goal: Goal) -> tuple[dict, dict, str]:
+    """One fresh project attempt using the verified failed goal and saved plan."""
+    import os
+    import stat
+
+    if not path.is_file() or path.is_symlink():
+        raise EngineeringStop("Missing original private engineering report")
+    info = path.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise EngineeringStop("Original report must be user-owned and private")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(report, dict) or report.get("goal_sha256") != goal.digest
+            or report.get("state") != "stopped"
+            or report.get("planner_model") != "gpt-oss:20b"):
+        raise EngineeringStop("Original goal is not an eligible stopped local attempt")
+    events = report.get("events")
+    if not isinstance(events, list):
+        raise EngineeringStop("Original event history missing")
+    allowed = {"plan_validated", "project_created", "failed_draft_requeued"}
+    if any(not isinstance(e, dict) or e.get("event") not in allowed for e in events):
+        raise EngineeringStop("Original run progressed beyond drafting; refusing restart")
+    created = [e.get("project_id") for e in events if e.get("event") == "project_created"]
+    if len(created) != 1 or not isinstance(created[0], str) or not ID_PATTERN.fullmatch(created[0]):
+        raise EngineeringStop("Original project identity is ambiguous")
+    saved = report.get("plan")
+    if not isinstance(saved, dict) or not isinstance(saved.get("tasks"), list):
+        raise EngineeringStop("Original verified plan missing")
+    raw_tasks = []
+    for task in saved["tasks"]:
+        if not isinstance(task, dict) or not all(x in task for x in ("role", "action", "criteria")):
+            raise EngineeringStop("Original plan is malformed")
+        raw_tasks.append({key: task[key] for key in ("role", "action", "criteria")})
+    verified = parse_plan(json.dumps({"tasks": raw_tasks}), goal)
+    if verified != saved:
+        raise EngineeringStop("Original plan no longer validates")
+    return report, verified, created[0]
+
+
+def assert_fresh_restart_allowed(api: EngineeringAPI, goal: Goal, plan: dict,
+                                 previous_id: str) -> None:
+    """Before reserving a retry report, confirm the original is an untouched failed draft."""
+    state = api.call("status")
+    if not state.get("project_mode_enabled") or not state.get("sandbox_verify_enabled"):
+        raise EngineeringStop("Local Project Mode and sandbox must be enabled")
+    original = api.call(f"projects/{previous_id}")
+    if (original.get("status") != "failed" or original.get("draft") is not None
+            or original.get("title") != goal.title
+            or original.get("requirements") != goal.project_requirements(plan)
+            or original.get("workspace") is not None
+            or original.get("apply_task_id") is not None):
+        raise EngineeringStop("Original project is not an unchanged failed draft")
+
+
+def restart_failed_goal(api: EngineeringAPI, goal: Goal, plan: dict, previous_id: str,
+                        *, record, repair_runner=run_cycle) -> dict:
+    """Preserve the exhausted original project; create one separately audited attempt."""
+    assert_fresh_restart_allowed(api, goal, plan, previous_id)
+    record({"event": "plan_reused", "previous_project": previous_id})
+    created = api.create_project(goal, plan)
+    record({"event": "project_created", "project_id": created["id"]})
+    return finish_goal(api, goal, created["id"], record=record,
+                       repair_runner=repair_runner)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("goal", type=Path, help="JSON goal contract with user-authored tests")
     parser.add_argument("--execute", action="store_true", help="Delegate bounded project write/test/repair")
     parser.add_argument("--resume", action="store_true", help="Once-only recover a failed local draft")
+    parser.add_argument("--restart-failed", action="store_true",
+                        help="One fresh project attempt with saved plan after exhausted recovery")
     args = parser.parse_args()
     try:
-        if args.resume and not args.execute:
-            raise EngineeringStop("Recovery requires explicit --execute --resume")
+        if args.resume and args.restart_failed:
+            raise EngineeringStop("Choose --resume or --restart-failed, not both")
+        if (args.resume or args.restart_failed) and not args.execute:
+            raise EngineeringStop("Recovery requires explicit --execute")
         if not args.goal.is_file() or args.goal.is_symlink():
             raise EngineeringStop("Provide an existing regular goal JSON file")
         goal = parse_goal(args.goal.read_bytes())
         setup_runtime()
         runs = RUNTIME / "engineering-runs"
         report_path = runs / f"{goal.digest}.json"
-        if args.resume:
+        if args.restart_failed:
+            previous_report, plan, project_id = validated_restart_report(report_path, goal)
+            retry_path = runs / f"{goal.digest}.retry1.json"
+            if retry_path.exists() or retry_path.is_symlink():
+                raise EngineeringStop("A fresh recovery attempt already exists; no repeated replay")
+            assert_fresh_restart_allowed(EngineeringAPI(get_token()), goal, plan, project_id)
+            runs.mkdir(mode=0o700, exist_ok=True)
+            model = "gpt-oss:20b"
+            report_path = retry_path
+            report = {"goal_sha256": goal.digest, "planner_model": model,
+                      "plan": plan, "events": [], "state": "starting",
+                      "restarted_from": project_id,
+                      "original_report_state": previous_report["state"]}
+            save_atomic_private(report_path, report)
+            print(json.dumps({"restart_from_failed_project": project_id, "model": model,
+                              "plan": plan, "goal_sha256": goal.digest}, indent=2), flush=True)
+        elif args.resume:
             report, plan, project_id = validated_resume_report(report_path, goal)
             model = "gpt-oss:20b"
             print(json.dumps({"resume_project": project_id, "model": model,
@@ -297,6 +381,9 @@ def main() -> None:
                 save_atomic_private(report_path, report)
                 result = resume_goal(EngineeringAPI(get_token()), goal, plan,
                                      project_id, record=record)
+            elif args.restart_failed:
+                result = restart_failed_goal(EngineeringAPI(get_token()), goal, plan,
+                                             project_id, record=record)
             else:
                 result = execute_goal(EngineeringAPI(get_token()), goal, plan, record=record)
             report.update({"state": "finished", "result": result})
