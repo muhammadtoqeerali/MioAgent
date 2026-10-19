@@ -9,12 +9,26 @@ type RepoRun = { id: string; state: string; model: string | null; planner_model:
   attempt_count: number; applied: boolean; patch_available: boolean; created_unix: number | null };
 type GoalRun = { id: string; state: string; model: string | null; project_id: string | null;
   outcome: string | null };
+type Goal = { id: string; repository: string; task: string; editable_files: string[]; acceptance_tests: string[]; max_attempts: number;
+  run: { state: string } | null; apply: { state: string } | null; run_state: string | null; model: string | null;
+  tests_run: number; applied: boolean; patch_available: boolean };
 type Summary = { release: string; models: Model[]; fleet_active: boolean;
   routes: Record<string, string[]>; repo_runs: RepoRun[]; goal_runs: GoalRun[];
-  warning: string | null; capabilities: Record<string, boolean>; read_only: boolean };
+  warning: string | null; capabilities: Record<string, boolean>; read_only: boolean; controls_enabled?: boolean };
 
 async function read<T>(path: string): Promise<T> {
   const response = await fetch(`/api/proxy/${path}`, { cache: "no-store" });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(payload?.detail ?? `API returned ${response.status}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function post<T>(path: string, data: object): Promise<T> {
+  const response = await fetch(`/api/proxy/${path}`, {
+    method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+  });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
     throw new Error(payload?.detail ?? `API returned ${response.status}`);
@@ -28,6 +42,11 @@ function short(value: string, length = 14): string {
 
 export default function IntelligencePage() {
   const [data, setData] = useState<Summary | null>(null);
+  const [goals, setGoals] = useState<Goal[]>([]);
+  const [selectedGoal, setSelectedGoal] = useState<string | null>(null);
+  const [goalStatus, setGoalStatus] = useState<{ run_log: string; apply_log: string } | null>(null);
+  const [jobBusy, setJobBusy] = useState(false);
+  const [reviewedPatch, setReviewedPatch] = useState<{ id: string; sha256: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState<string>("Not yet synced");
   const [patch, setPatch] = useState<string | null>(null);
@@ -37,8 +56,11 @@ export default function IntelligencePage() {
 
   const refresh = useCallback(async () => {
     try {
-      const current = await read<Summary>("intelligence/overview");
+      const [current, registered] = await Promise.all([
+        read<Summary>("intelligence/overview"), read<{ goals: Goal[] }>("intelligence/goals"),
+      ]);
       setData(current);
+      setGoals(registered.goals);
       setLoaded(new Date().toLocaleTimeString());
       setError(null);
     } catch (exc) {
@@ -48,7 +70,7 @@ export default function IntelligencePage() {
 
   useEffect(() => {
     void refresh();
-    const timer = setInterval(() => void refresh(), 15000);
+    const timer = setInterval(() => void refresh(), 4000);
     return () => clearInterval(timer);
   }, [refresh]);
 
@@ -56,16 +78,55 @@ export default function IntelligencePage() {
     setPatchBusy(true);
     setPatchError(null);
     setPatch(null);
+    setReviewedPatch(null);
     setPatchId(id);
     try {
-      const result = await read<{ id: string; patch: string }>(`intelligence/repository/${id}/patch`);
+      const result = await read<{ id: string; patch: string; sha256: string }>(`intelligence/repository/${id}/patch`);
       setPatch(result.patch);
+      setReviewedPatch({ id, sha256: result.sha256 });
     } catch (exc) {
       setPatchError(exc instanceof Error ? exc.message : "Could not load patch");
     } finally {
       setPatchBusy(false);
     }
   }
+
+  async function runGoal(id: string) {
+    if (!window.confirm("Start an isolated local-model repository trial? Original source will remain unchanged.")) return;
+    setJobBusy(true); setError(null);
+    try {
+      await post(`intelligence/goals/${id}/start`, { approved: true });
+      setSelectedGoal(id); await refresh();
+    } catch (exc) { setError(exc instanceof Error ? exc.message : "Could not start engineering run"); }
+    finally { setJobBusy(false); }
+  }
+
+  async function applyGoal(id: string) {
+    if (!reviewedPatch || reviewedPatch.id !== id || patch == null) {
+      setError("Open and inspect this run's verified diff before applying any source changes."); return;
+    }
+    if (!window.confirm("Apply EXACTLY this reviewed patch to the original repository after re-running immutable tests? This changes source files.")) return;
+    setJobBusy(true); setError(null);
+    try {
+      await post(`intelligence/goals/${id}/apply`, { approved: true, patch_sha256: reviewedPatch.sha256 });
+      setSelectedGoal(id); await refresh();
+    } catch (exc) { setError(exc instanceof Error ? exc.message : "Could not authorize patch application"); }
+    finally { setJobBusy(false); }
+  }
+
+  useEffect(() => {
+    if (!selectedGoal) return;
+    let canceled = false;
+    const refreshLog = async () => {
+      try {
+        const status = await read<{ run_log: string; apply_log: string }>(`intelligence/goals/${selectedGoal}/status`);
+        if (!canceled) setGoalStatus(status);
+      } catch { if (!canceled) setGoalStatus(null); }
+    };
+    void refreshLog();
+    const interval = setInterval(() => void refreshLog(), 3000);
+    return () => { canceled = true; clearInterval(interval); };
+  }, [selectedGoal]);
 
   return (
     <div className={styles.shell}>
@@ -77,7 +138,7 @@ export default function IntelligencePage() {
         <a href="/projects">▣ &nbsp; Project Mode</a>
         <a className={styles.current} href="/intelligence">◉ &nbsp; Intelligence &amp; Engineering</a>
         <div className={styles.navFoot}>LOCAL-FIRST · OWNER CONTROLLED
-          <small>UI release v0.4F</small>
+          <small>UI release v0.4G</small>
         </div>
       </aside>
       <main className={styles.main}>
@@ -90,8 +151,8 @@ export default function IntelligencePage() {
             <span className={styles.eyebrow}>MIOAGENT / VERIFIED CAPABILITIES</span>
             <h1>Your local intelligence fleet<span>.</span></h1>
             <p>Live local models, bounded repository engineering, and audited test evidence.
-              This page is read-only: it never executes code, changes a model policy, or applies a patch.</p>
-            <div className={styles.chips}><span>v0.4F DASHBOARD</span><span>LOCAL API</span><span>READ-ONLY EVIDENCE</span></div>
+              Inspect live evidence, launch explicitly registered engineering goals, and approve verified patches separately. Model policies and filesystem scope remain owner-controlled.</p>
+            <div className={styles.chips}><span>v0.4G DASHBOARD</span><span>LOCAL API</span><span>CONTROLLED AGENT RUNS</span></div>
           </div>
           {error && <div role="alert" className={styles.error}>{error}. Confirm that the Ubuntu API and SSH tunnel are running.</div>}
           {data?.warning && <div role="status" className={styles.warning}>{data.warning}</div>}
@@ -122,6 +183,27 @@ export default function IntelligencePage() {
             </section>
           </div>
           <section className={styles.panel}>
+            <div className={styles.panelHead}><h2>Registered repository tasks</h2><span className={styles.tag}>OWNER-APPROVED SCOPE</span></div>
+            <p className={styles.note}>Only goals registered locally with <code>python -m scripts.register_repo_goal /absolute/path/to/goal.json</code> can run here. You cannot submit arbitrary paths or commands through this dashboard.</p>
+            {data && goals.length === 0 && <p>No registered goals yet. Register the existing demo goal from Ubuntu to activate browser controls.</p>}
+            {goals.map(goal => <div className={styles.run} key={goal.id}>
+              <div className={styles.runTop}><div><strong>{goal.task}</strong><small>{goal.repository}</small></div>
+                <span className={goal.run_state === "passed" ? styles.good : styles.tag}>{goal.apply?.state ?? goal.run?.state ?? goal.run_state ?? "READY"}</span></div>
+              <p className={styles.changed}>Editable source: {goal.editable_files.join(", ")}</p>
+              <p className={styles.changed}>Locked tests: {goal.acceptance_tests.join(", ")}</p>
+              <div className={styles.actions}>
+                {!goal.run && !goal.run_state && <button type="button" disabled={jobBusy} className={styles.patchButton} onClick={() => void runGoal(goal.id)}>
+                  Run models and isolated tests →</button>}
+                <button type="button" className={styles.patchButton} onClick={() => { setSelectedGoal(goal.id); setGoalStatus(null); }}>View execution log</button>
+                {goal.patch_available && <button type="button" className={styles.patchButton} onClick={() => void showPatch(goal.id)}>Review verified diff</button>}
+                {goal.patch_available && !goal.applied &&
+                  <button type="button" disabled={jobBusy || reviewedPatch?.id !== goal.id || patch === null}
+                    className={styles.approveButton} onClick={() => void applyGoal(goal.id)}>Approve and reverify application →</button>}
+              </div>
+              {selectedGoal === goal.id && <pre className={styles.jobLog}>{(goalStatus?.run_log ?? "") + "\n" + (goalStatus?.apply_log ?? "") || "Waiting for the runner…"}</pre>}
+            </div>)}
+          </section>
+          <section className={styles.panel}>
             <div className={styles.panelHead}><h2>Existing-repository engineering</h2><span className={styles.tag}>v0.4E TEST EVIDENCE</span></div>
             {!data && <p>Reading verified run records…</p>}
             {data && data.repo_runs.length === 0 && <p>No repository engineering runs recorded in the private runtime.</p>}
@@ -143,7 +225,7 @@ export default function IntelligencePage() {
             {patchBusy && <p>Loading saved patch…</p>}
             {patchError && <div role="alert" className={styles.error}>{patchError}</div>}
             {patch != null && <pre className={styles.diff}>{patch}</pre>}
-            <p className={styles.note}>Patch preview only. Applying verified bytes requires the separate owner-authorized CLI command and fresh test verification.</p>
+            <p className={styles.note}>View the exact verified source bytes before approval. For registered tasks only, Apply separately re-runs immutable tests and checks the patch digest.</p>
           </section>}
           <section className={styles.panel}>
             <div className={styles.panelHead}><h2>Goal-driven engineering history</h2><span className={styles.tag}>PRIVATE RUN REPORTS</span></div>
@@ -160,7 +242,7 @@ export default function IntelligencePage() {
               </div>)}
             </div>
           </section>
-          <footer className={styles.footer}>MioAgent v0.4F · Authenticated localhost data · No background inference from this dashboard</footer>
+          <footer className={styles.footer}>MioAgent v0.4G · Authenticated owner-registered jobs · No automatic model downloads or Git publication</footer>
         </div>
       </main>
     </div>

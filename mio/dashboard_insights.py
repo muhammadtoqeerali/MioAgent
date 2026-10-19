@@ -6,6 +6,7 @@ private run metadata and a separately requested verified patch to the local UI.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -130,7 +131,8 @@ def verified_patch(root: Path, run_id: str) -> dict[str, str]:
     if not _private_regular(patch, MAX_PATCH_SIZE):
         raise HTTPException(404, "Verified patch not found")
     try:
-        return {"id": run_id, "patch": patch.read_text(encoding="utf-8")}
+        return {"id": run_id, "patch": patch.read_text(encoding="utf-8"),
+                "sha256": hashlib.sha256(patch.read_bytes()).hexdigest()}
     except (OSError, UnicodeError) as exc:
         raise HTTPException(404, "Verified patch not found") from exc
 
@@ -152,7 +154,7 @@ def register_intelligence_routes(app: FastAPI, require_token: Callable[..., None
             policy = None
             warning = "Fleet policy unavailable or invalid"
         return {
-            "release": "v0.4F",
+            "release": "v0.4G",
             "models": [{"id": name, "size_bytes": meta.get("size_bytes"),
                         "selected": policy is not None and name in policy.installed_fingerprints}
                        for name, meta in sorted(found.items())],
@@ -171,8 +173,13 @@ def register_intelligence_routes(app: FastAPI, require_token: Callable[..., None
                 "unrestricted_tools": False,
             },
             "read_only": True,
+            "controls_enabled": True,
         }
 
     @app.get("/api/intelligence/repository/{run_id}/patch", dependencies=[Depends(require_token)])
     def intelligence_patch(run_id: str) -> dict[str, str]:
         return verified_patch(RUNTIME, run_id)
+
+    from mio.dashboard_jobs import register_job_routes
+
+    register_job_routes(app, require_token)
