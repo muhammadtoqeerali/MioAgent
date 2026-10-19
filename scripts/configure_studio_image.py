@@ -17,7 +17,7 @@ async def run(checkpoint: str | None) -> None:
     root = private_root(RUNTIME / "studio")
     options = await available_checkpoints()
     if not checkpoint:
-        print(json.dumps({"available_local_checkpoints": options, "configured": comfy_settings(RUNTIME)}, indent=2))
+        print(json.dumps({"available_local_checkpoints": options, "configured": comfy_settings(root)}, indent=2))
         return
     if checkpoint not in options:
         raise StudioError("Checkpoint is not advertised by local ComfyUI on 127.0.0.1:8188")

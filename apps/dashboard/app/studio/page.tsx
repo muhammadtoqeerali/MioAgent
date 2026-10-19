@@ -31,7 +31,6 @@ async function encodeFile(file: File): Promise<string> {
 
 export default function Studio() {
   const [cap, setCap] = useState<Capabilities | null>(null);
-  const [mode, setMode] = useState<"chat" | "research" | "analyze" | "image">("chat");
   const [prompt, setPrompt] = useState("");
   const [files, setFiles] = useState<Attachment[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -103,21 +102,18 @@ export default function Studio() {
     setTurns((prev) => [...prev, { prompt: question, result: null, error: null }]);
     setPrompt("");
     try {
-      if (mode === "image") {
-        const queued = await proxy<{ id: string }>("studio/images", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: question }),
-        });
-        queuedImage = true;
-        setImageJob(queued.id);
-        return;
-      }
       const response = await fetch("/api/studio", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: question, mode, attachments: files.map((f) => f.id) }),
+        body: JSON.stringify({ prompt: question, mode: "auto", attachments: files.map((f) => f.id) }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail ?? `Assistant failed (${response.status})`);
+      if (result.operation === "image" && typeof result.image_job === "string") {
+        queuedImage = true;
+        setFiles([]);
+        setImageJob(result.image_job);
+        return;
+      }
       setTurns((prev) => { const next = [...prev]; next[next.length - 1] = { prompt: question, result, error: null }; return next; });
       setFiles([]);
     } catch (e) {
@@ -128,7 +124,7 @@ export default function Studio() {
 
   return <div className={styles.shell}>
     <aside className={styles.side}>
-      <div className={styles.logo}>✦ MioAgent <span>STUDIO v0.4H</span></div>
+      <div className={styles.logo}>✦ MioAgent <span>STUDIO v0.4I</span></div>
       <a href="/" className={styles.link}>← Dashboard</a>
       <a href="/intelligence" className={styles.link}>◇ Engineering &amp; models</a>
       <a href="/assistant" className={styles.link}>◇ Conversation history</a>
@@ -141,15 +137,15 @@ export default function Studio() {
       </div>
     </aside>
     <main className={styles.main}>
-      <header className={styles.head}><div><strong>MioAgent Studio</strong><small>Research · Write · Analyze · Create</small></div><span className={styles.local}>LOCAL MODELS</span></header>
+      <header className={styles.head}><div><strong>MioAgent Studio</strong><small>One chat · Automatic web, files and image tools</small></div><span className={styles.local}>LOCAL MODELS</span></header>
       <section className={styles.thread}>
         {!turns.length && <div className={styles.welcome}>
           <span className={styles.spark}>✦</span><h1>What can I help you make?</h1>
           <p>Ask about current information, attach documents or images, or create artwork with a configured local generator. Evidence and tool availability are shown with every answer.</p>
           <div className={styles.tiles}>
-            <button onClick={() => {setMode("research");setPrompt("Research recent developments in ");}}>⌕ Research with sources</button>
-            <button onClick={() => {setMode("analyze");upload.current?.click();}}>▤ Analyze a document</button>
-            <button onClick={() => {setMode("image");setPrompt("Create an illustration of ");}}>✦ Generate an image</button>
+            <button onClick={() => {setPrompt("Research recent developments in ");}}>⌕ Research with sources</button>
+            <button onClick={() => {upload.current?.click();}}>▤ Analyze a document</button>
+            <button onClick={() => {setPrompt("Create an illustration of ");}}>✦ Generate an image</button>
           </div>
         </div>}
         {turns.map((turn, i) => <div key={i} className={styles.turn}>
@@ -170,19 +166,15 @@ export default function Studio() {
       <div className={styles.compose}>
         {error && <div role="alert" className={styles.error}>{error}</div>}
         {files.length > 0 && <div className={styles.files}>{files.map((f) => <span key={f.id}>{f.kind === "image" ? "▧" : "▤"} {f.name} <button aria-label={`Remove ${f.name}`} onClick={() => setFiles((s) => s.filter((x) => x.id !== f.id))}>×</button></span>)}</div>}
-        <div className={styles.modes}>
-          {(["chat","research","analyze","image"] as const).map((key) =>
-            <button key={key} onClick={() => setMode(key)} className={mode === key ? styles.selected : ""} disabled={busy}>{key === "chat" ? "Chat" : key === "research" ? "⌕ Web research" : key === "analyze" ? "▤ Analyze files" : "✦ Create image"}</button>)}
-        </div>
         <div className={styles.entry}>
           <input type="file" ref={upload} hidden multiple onChange={(e) => void attach(e.target.files)}/>
           <button title="Add files" aria-label="Add files" disabled={busy} onClick={() => upload.current?.click()}>＋</button>
           <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={6000} disabled={busy}
-            placeholder={mode === "image" ? "Describe an image to create…" : mode === "research" ? "What should I research online?" : "Ask anything, or attach a file…"}
+            placeholder="Ask anything — research the web, generate an image, or attach a file…"
             onKeyDown={(e) => {if(e.key === "Enter" && (e.ctrlKey || e.metaKey)){e.preventDefault();void send();}}}/>
           <button className={styles.send} disabled={!prompt.trim() || busy} onClick={() => void send()}>{busy ? "…" : "↑"}</button>
         </div>
-        <small className={styles.disclaimer}>Ctrl+Enter to send · Files max 8 MiB each · Web research sends the search query to Bing · Images require local ComfyUI</small>
+        <small className={styles.disclaimer}>Ctrl+Enter to send · Automatic tool selection · Files max 8 MiB · Web queries go to public search providers · Images require local ComfyUI</small>
       </div>
     </main>
   </div>;

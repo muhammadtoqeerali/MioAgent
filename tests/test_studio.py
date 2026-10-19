@@ -196,7 +196,7 @@ def test_studio_requires_bearer_and_never_discloses_file(tmp_path, monkeypatch):
         assert client.get("/api/studio/capabilities").status_code == 401
         assert client.post("/api/studio/attachments", json={"filename": "secret.txt", "base64": b64(b"private")}).status_code == 401
         headers = {"Authorization": "Bearer testcase"}
-        assert client.get("/api/studio/capabilities", headers=headers).json()["release"] == "v0.4H"
+        assert client.get("/api/studio/capabilities", headers=headers).json()["release"] == "v0.4I"
         saved = client.post("/api/studio/attachments", headers=headers,
                             json={"filename": "data.txt", "base64": b64(b"evidence")})
         assert saved.status_code == 200, saved.text

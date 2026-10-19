@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from mio.config import Settings
 from mio.model_fleet import FleetRouter, inventory, load_policy
+from mio.studio_autoroute import route_intent
 from mio.studio_files import StudioError, private_root, read_attachment, save_attachment
 from mio.studio_tools import (
     available_checkpoints,
@@ -39,7 +40,7 @@ class UploadRequest(BaseModel):
 
 class StudioAsk(BaseModel):
     prompt: str = Field(min_length=3, max_length=6000)
-    mode: Literal["chat", "research", "analyze"] = "chat"
+    mode: Literal["auto", "chat", "research", "analyze", "image"] = "auto"
     attachments: list[str] = Field(default_factory=list, max_length=6)
 
 
@@ -125,12 +126,12 @@ def register_studio_routes(app: FastAPI, settings: Settings, require_token: Call
         except (StudioError, OSError, ValueError):
             enabled = False
         policy = load_policy()
-        return {"release": "v0.4H", "online_research": "public-search-connection-required",
+        return {"release": "v0.4I", "online_research": "public-search-connection-required",
                 "attachments": "8 MiB per file; text/document/image formats",
                 "installed_models": names, "fleet_active": policy is not None,
                 "image_generation_ready": enabled,
                 "image_generation_backend": "local ComfyUI" if enabled else "not configured",
-                "note": "Web evidence is retrieved only on explicit research requests."}
+                "note": "Automatic routing: research requests use public search; images need an installed local diffusion checkpoint."}
 
     @app.post("/api/studio/attachments", dependencies=auth)
     def upload(payload: UploadRequest):
@@ -149,7 +150,29 @@ def register_studio_routes(app: FastAPI, settings: Settings, require_token: Call
                 attachments.append(meta)
                 if meta["kind"] == "image":
                     images.append(raw)
-            sources = await web_search(payload.prompt) if payload.mode == "research" else []
+            decision = route_intent(payload.prompt, [meta["kind"] for meta in attachments],
+                                    payload.mode)
+            if decision == "image":
+                if attachments:
+                    raise StudioError("Image-to-image editing is not supported by this local checkpoint workflow")
+                config = comfy_settings(_studio(root))
+                if config is None or config["checkpoint"] not in await available_checkpoints():
+                    raise StudioError("Image creation needs a running local ComfyUI with an installed SD checkpoint; see Studio setup guide")
+                jobs = _jobs(root)
+                for record_path in jobs.glob("*.json"):
+                    if not record_path.is_symlink() and record_path.stat().st_size < 1000:
+                        status = json.loads(record_path.read_text()).get("state")
+                        if status in ("queued", "running"):
+                            raise StudioError("Another local image generation is active")
+                job_id = uuid.uuid4().hex
+                _write_job(root, {"id": job_id, "state": "queued", "error": None})
+                job = asyncio.create_task(_image_task(root, job_id, payload.prompt, config["checkpoint"]))
+                app.state.studio_image_jobs = getattr(app.state, "studio_image_jobs", set())
+                app.state.studio_image_jobs.add(job)
+                job.add_done_callback(app.state.studio_image_jobs.discard)
+                return {"operation": "image", "mode": "image", "image_job": job_id,
+                        "model": "ComfyUI", "sources": [], "attachments": []}
+            sources = await web_search(payload.prompt) if decision == "research" else []
             evidence = "\n".join(f"[{s['ref']}] {s['title']}: {s['snippet']} ({s['url']})"
                                  for s in sources)
             selected = "\n".join(f"[F{i+1}] {a['name']} ({a['kind']}):\n{a['extract'][:10000]}"
@@ -171,14 +194,14 @@ def register_studio_routes(app: FastAPI, settings: Settings, require_token: Call
                     vision_prompt = f"{task}\nCompare two uploaded images. Question: {payload.prompt}\n{selected[:6000]}\nEvidence:\n{evidence[:5000]}"
                 answer, model = await vision_answer(vision_prompt, images, approved)
             else:
-                role = "research" if payload.mode == "research" else "writing" if payload.mode == "analyze" else "chat"
+                role = "research" if decision == "research" else "writing" if decision == "analyze" else "chat"
                 router = FleetRouter(settings, role)
                 output = await router.complete([
                     {"role": "system", "content": task},
                     {"role": "user", "content": f"USER QUESTION:\n{payload.prompt}\n\nUPLOADS:\n{selected}\n\nLIVE SEARCH SNIPPETS:\n{evidence}"},
                 ], max_tokens=1900)
                 answer, model = output.text, output.model
-            return {"answer": answer, "model": model, "mode": payload.mode,
+            return {"operation": "answer", "answer": answer, "model": model, "mode": decision,
                     "sources": sources, "attachments": [{"ref": f"F{i+1}", "name": a["name"]}
                                                        for i, a in enumerate(attachments)],
                     "source_scope": "Search snippets only" if sources else "No online search used"}
