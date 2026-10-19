@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from mio.config import Settings
+from mio.dashboard_insights import register_intelligence_routes
 from mio.database import (
     AIJob,
     ChatMessage,
@@ -519,5 +520,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 mark_project_canceled_for_task(db, task_id)
             db.flush()
             return serialize_task(task)
+
+    register_intelligence_routes(app, require_token)
 
     return app

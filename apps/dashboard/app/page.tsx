@@ -99,14 +99,15 @@ export default function Home() {
         <button className={`nav-item ${view === "overview" ? "active" : ""}`} onClick={() => setView("overview")}><span>◈</span> Overview</button>
         <a className="nav-item" href="/assistant"><span>✦</span> AI Assistant</a>
         <a className="nav-item" href="/projects"><span>▣</span> Project Mode</a>
+        <a className="nav-item" href="/intelligence"><span>◉</span> Intelligence &amp; Engineering</a>
         <button className={`nav-item ${view === "activity" ? "active" : ""}`} onClick={() => setView("activity")}><span>▤</span> Task activity</button>
         <button className={`nav-item ${view === "settings" ? "active" : ""}`} onClick={() => setView("settings")}><span>⚙</span> Capabilities</button>
-        <div className="sidebar-foot"><span className="status-dot" /> Local-first foundation <small>v0.2.0 · Phase 2</small></div>
+        <div className="sidebar-foot"><span className="status-dot" /> Local-first foundation <small>v0.4F · Local fleet</small></div>
       </aside>
       <main className="main">
         <header className="topbar"><span>WORKSTATION / {view.toUpperCase()}</span><div><span className="muted">Synced {lastSync}</span><span className="pill">LOCAL ONLY</span></div></header>
         <div className="content">
-          <div className="hero"><div className="hero-kicker">MIOAGENT / SYSTEM CONSOLE</div><h1>Your AI command center<span>.</span></h1><p>The foundation is live. Open AI Assistant for model-based reasoning and persistent conversations. Voice and computer control are planned for later phases.</p></div>
+          <div className="hero"><div className="hero-kicker">MIOAGENT / SYSTEM CONSOLE</div><h1>Your AI command center<span>.</span></h1><p>Local models now support goal-driven engineering, bounded editing of existing Python repositories, trusted tests, and cross-model review. Open Intelligence & Engineering to inspect real model routes and verified patches.</p></div>
           {error && <div role="alert" className="alert">Connection or task error: {error}</div>}
           {view === "overview" && <>
             <section className="stats">
@@ -116,7 +117,7 @@ export default function Home() {
               <div className="stat"><label>COMPLETED</label><b>{counts.completed}</b><span>From recent task history</span></div>
             </section>
             <div className="two-col">
-              <section className="panel"><div className="panel-title"><h2>Create a task</h2><span className="tag">PHASE 1</span></div>
+              <section className="panel"><div className="panel-title"><h2>Create a basic task</h2><span className="tag">LEGACY WORKER</span></div>
                 <p className="hint">These are real persisted worker operations, not pretend AI results.</p>
                 <label className="field-label" htmlFor="kind">TASK TYPE</label>
                 <select id="kind" value={kind} onChange={(e) => setKind(e.target.value as TaskKind)}>{Object.entries(kinds).map(([key, value]) => <option value={key} key={key}>{value.name}</option>)}</select>
@@ -148,7 +149,7 @@ export default function Home() {
                 {(selectedTask.status === "queued" || selectedTask.status === "running") && <button className="secondary-button" onClick={() => void cancel(selectedTask.id)}>Cancel task</button>}
               </>}
             </section></div>}
-          {view === "settings" && <section className="panel"><div className="panel-title"><h2>Planned capability activation</h2><span className="tag">READ ONLY</span></div>
+          {view === "settings" && <section className="panel"><div className="panel-title"><h2>Capability overview · New tools in Intelligence & Engineering</h2><span className="tag">READ ONLY</span></div>
             <p className="hint">No capability switches are provided until their permission enforcement is built and tested.</p>
             {[["Model routing", "Phase 2"], ["Voice input/output", "Phase 3"], ["Workspace coding tools", "Phase 4"], ["Browser automation", "Phase 4"], ["Continuous research and learning", "Phase 6"]].map(([name, phase]) => <div className="readiness" key={name}><span>{name}</span><strong>{phase}</strong></div>)}
           </section>}
