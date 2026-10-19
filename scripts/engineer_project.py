@@ -24,6 +24,7 @@ from mio.engineering_engine import (
     validate_review_draft,
 )
 from mio.llm import ModelRouter
+from mio.model_fleet import FleetRouter, load_policy
 from scripts.autonomous_repair import (
     ID_PATTERN,
     LocalAPI,
@@ -127,17 +128,22 @@ async def local_plan(goal: Goal) -> tuple[dict, str]:
         "criteria": {f"C{i}": x for i, x in enumerate(goal.criteria, 1)},
         "test_paths": [p for p, _ in goal.acceptance_tests],
     }, ensure_ascii=False)
-    router = ModelRouter(settings)
+    fleet = load_policy()
+    router = FleetRouter(settings, "planning", fleet) if fleet else ModelRouter(settings)
     messages = [
         {"role": "system", "content": PLANNER_SYSTEM},
         {"role": "user", "content": content},
     ]
     for retry in range(2):
         response = await router.complete(messages, max_tokens=1200)
-        if response.provider != "local" or response.model != "gpt-oss:20b":
+        if response.provider != "local" or (fleet is None and response.model != "gpt-oss:20b"):
             raise EngineeringStop("Planner used an unexpected model/provider")
         try:
-            return parse_plan(response.text, goal), response.model
+            roles = None
+            if fleet is not None:
+                roles = {role: fleet.roles[role][0] for role in ("planning", "coding", "review")}
+                roles["planning"] = response.model
+            return parse_plan(response.text, goal, role_models=roles), response.model
         except EngineeringStop:
             if retry:
                 raise
@@ -200,6 +206,13 @@ def finish_goal(api: EngineeringAPI, goal: Goal, project_id: str, *, record,
     }
 
 
+def _approved_report_model(name: object) -> bool:
+    if name == "gpt-oss:20b":
+        return True  # Backward compatibility for already verified v0.4A-C runs.
+    fleet = load_policy()
+    return isinstance(name, str) and fleet is not None and name in fleet.roles["planning"]
+
+
 def validated_resume_report(path: Path, goal: Goal) -> tuple[dict, dict, str]:
     """Only re-use a single private stopped plan for exactly the same goal."""
     import os
@@ -212,7 +225,7 @@ def validated_resume_report(path: Path, goal: Goal) -> tuple[dict, dict, str]:
         raise EngineeringStop("Recovery report must be user-owned and private")
     report = json.loads(path.read_text(encoding="utf-8"))
     if (not isinstance(report, dict) or report.get("goal_sha256") != goal.digest
-            or report.get("state") != "stopped" or report.get("planner_model") != "gpt-oss:20b"):
+            or report.get("state") != "stopped" or not _approved_report_model(report.get("planner_model"))):
         raise EngineeringStop("Only a stopped, matching local-model report can be resumed")
     events = report.get("events")
     if not isinstance(events, list):
@@ -230,7 +243,9 @@ def validated_resume_report(path: Path, goal: Goal) -> tuple[dict, dict, str]:
     clean_tasks = [{k: t[k] for k in ("role", "action", "criteria")}
                    for t in saved["tasks"] if isinstance(t, dict)
                    and all(k in t for k in ("role", "action", "criteria"))]
-    plan = parse_plan(json.dumps({"tasks": clean_tasks}), goal)
+    selected = {task["role"]: task["model"] for task in saved["tasks"]}
+    plan = parse_plan(json.dumps({"tasks": clean_tasks}), goal,
+                      role_models=selected if saved.get("routing") != "local gpt-oss:20b only, no downloaded skills or remote GPUs" else None)
     if plan != saved:
         raise EngineeringStop("Saved plan has changed since validation")
     return report, plan, project_id
@@ -266,7 +281,7 @@ def validated_restart_report(path: Path, goal: Goal) -> tuple[dict, dict, str]:
     report = json.loads(path.read_text(encoding="utf-8"))
     if (not isinstance(report, dict) or report.get("goal_sha256") != goal.digest
             or report.get("state") != "stopped"
-            or report.get("planner_model") != "gpt-oss:20b"):
+            or not _approved_report_model(report.get("planner_model"))):
         raise EngineeringStop("Original goal is not an eligible stopped local attempt")
     events = report.get("events")
     if not isinstance(events, list):
@@ -285,7 +300,9 @@ def validated_restart_report(path: Path, goal: Goal) -> tuple[dict, dict, str]:
         if not isinstance(task, dict) or not all(x in task for x in ("role", "action", "criteria")):
             raise EngineeringStop("Original plan is malformed")
         raw_tasks.append({key: task[key] for key in ("role", "action", "criteria")})
-    verified = parse_plan(json.dumps({"tasks": raw_tasks}), goal)
+    selected = {task["role"]: task["model"] for task in saved["tasks"]}
+    verified = parse_plan(json.dumps({"tasks": raw_tasks}), goal,
+                          role_models=selected if saved.get("routing") != "local gpt-oss:20b only, no downloaded skills or remote GPUs" else None)
     if verified != saved:
         raise EngineeringStop("Original plan no longer validates")
     return report, verified, created[0]
@@ -343,7 +360,7 @@ def main() -> None:
                 raise EngineeringStop("A fresh recovery attempt already exists; no repeated replay")
             assert_fresh_restart_allowed(EngineeringAPI(get_token()), goal, plan, project_id)
             runs.mkdir(mode=0o700, exist_ok=True)
-            model = "gpt-oss:20b"
+            model = previous_report["planner_model"]
             report_path = retry_path
             report = {"goal_sha256": goal.digest, "planner_model": model,
                       "plan": plan, "events": [], "state": "starting",
@@ -354,7 +371,7 @@ def main() -> None:
                               "plan": plan, "goal_sha256": goal.digest}, indent=2), flush=True)
         elif args.resume:
             report, plan, project_id = validated_resume_report(report_path, goal)
-            model = "gpt-oss:20b"
+            model = report["planner_model"]
             print(json.dumps({"resume_project": project_id, "model": model,
                               "plan": plan, "goal_sha256": goal.digest}, indent=2), flush=True)
         else:

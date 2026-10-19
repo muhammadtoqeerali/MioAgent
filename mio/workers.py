@@ -16,6 +16,7 @@ from mio.config import Settings
 from mio.database import AIJob, ChatMessage, Task, utcnow
 from mio.llm import ModelRouter
 from mio.memory import recent_history, relevant_notes
+from mio.model_fleet import FleetRouter, load_policy
 from mio.project_tasks import apply_project, draft_project
 from mio.project_verification_tasks import verify_project_task
 from mio.repair_tasks import propose_project_repair
@@ -126,7 +127,8 @@ async def run_ai_task(sessions: sessionmaker, task_id: str, router: ModelRouter)
             "planner_model": completion.model, "planner_provider": completion.provider,
         })
 
-    result = await supervise(router, history, notes, on_plan=save_plan)
+    task_router = FleetRouter(router.settings, "chat") if load_policy() else router
+    result = await supervise(task_router, history, notes, on_plan=save_plan)
     # The user may have canceled while the model was responding. Commit task and
     # assistant message atomically so the system never duplicates completed turns.
     with sessions.begin() as db:

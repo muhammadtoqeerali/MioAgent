@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from mio.config import Settings
 from mio.database import Project, Task, utcnow
 from mio.llm import ModelRouter
+from mio.model_fleet import FleetRouter, load_policy
 from mio.project_mode import (
     PROJECT_PLANNER,
     ProjectPolicyError,
@@ -92,6 +93,10 @@ async def generate_validated_draft(router: ModelRouter, requirements: str) -> tu
                 raise ProjectPolicyError(
                     f"Model draft invalid after {DRAFT_RETRIES} attempts: {exc}"
                 ) from exc
+            # Escalate malformed source to a second benchmarked model when available.
+            # Otherwise retry the same local model exactly once as before.
+            if isinstance(router, FleetRouter):
+                router.advance()
             messages.append({"role": "user", "content": _draft_retry_message(str(exc))})
     raise ProjectPolicyError("Draft retry limit reached")
 
@@ -109,7 +114,7 @@ async def draft_project(sessions: sessionmaker, task_id: str, settings: Settings
         # Project Mode never selects paid APIs. This policy is enforced at the model client.
         local_only = settings.model_copy(update={"mio_allow_cloud": False,
                                                   "mio_model_route": "local"})
-        router = ModelRouter(local_only)
+        router = FleetRouter(local_only, "coding") if load_policy() else ModelRouter(local_only)
         approved_candidate, completion, attempts = await generate_validated_draft(
             router, requirements,
         )

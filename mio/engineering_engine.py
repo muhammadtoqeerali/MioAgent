@@ -155,7 +155,7 @@ PLANNER_SYSTEM = (
 )
 
 
-def parse_plan(text: str, goal: Goal) -> dict:
+def parse_plan(text: str, goal: Goal, *, role_models: dict[str, str] | None = None) -> dict:
     if not isinstance(text, str) or len(text.encode("utf-8")) > 9000:
         raise EngineeringStop("Planner response exceeds budget")
     raw = text.strip()
@@ -187,16 +187,25 @@ def parse_plan(text: str, goal: Goal) -> dict:
         if role in {"coding", "review"}:
             covered.update(refs)
         role_route = recommend(role, budget=Budget())
-        if role_route["model"] != "gpt-oss:20b" or role_route["selected_skills"]:
-            raise EngineeringStop("Unexpected model or skill routing")
-        route.append({**task, "model": role_route["model"],
+        if role_route["selected_skills"]:
+            raise EngineeringStop("Unexpected unreviewed skill routing")
+        if role_models is None:
+            selected_model = role_route["model"]
+            if selected_model != "gpt-oss:20b":
+                raise EngineeringStop("Unexpected baseline model")
+        else:
+            from mio.model_fleet import check_model_id
+            selected_model = check_model_id(role_models.get(role))
+        route.append({**task, "model": selected_model,
                       "skills": [], "tool_execution": False})
     if tasks[0]["role"] != "planning" or tasks[-1]["role"] != "review":
         raise EngineeringStop("Plan must start with planning and end with review")
     if not any(t["role"] == "coding" for t in tasks) or covered != allowed:
         raise EngineeringStop("Plan lacks coding work or acceptance-criterion mapping")
+    routing = ("local gpt-oss:20b only, no downloaded skills or remote GPUs"
+               if role_models is None else "local activated fleet preferred role models; actual attempts recorded separately")
     return {"tasks": route, "criteria_mapped": sorted(covered),
-            "routing": "local gpt-oss:20b only, no downloaded skills or remote GPUs",
+            "routing": routing,
             "note": "Mapping is a plan, not evidence that any criterion is met."}
 
 

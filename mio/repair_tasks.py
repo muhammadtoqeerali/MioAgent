@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from mio.config import Settings
 from mio.database import Project, Task, utcnow
 from mio.llm import ModelRouter
+from mio.model_fleet import FleetRouter, load_policy
 from mio.project_mode import ProjectPolicyError, verify_existing_project
 from mio.repair_proposal import is_failed_execution, repair_messages, validate_repair_reply
 
@@ -51,8 +52,19 @@ async def propose_project_repair(sessions: sessionmaker, task_id: str, settings:
         raise ProjectPolicyError("Original approved artifact is missing")
     messages = repair_messages(requirements, source_draft, failure)
     local_only = settings.model_copy(update={"mio_allow_cloud": False, "mio_model_route": "local"})
-    completion = await ModelRouter(local_only).complete(messages, max_tokens=2048)
-    proposal = validate_repair_reply(completion.text, source_draft)
+    model = FleetRouter(local_only, "repair") if load_policy() else ModelRouter(local_only)
+    for attempt in range(2):
+        completion = await model.complete(messages, max_tokens=2048)
+        try:
+            proposal = validate_repair_reply(completion.text, source_draft)
+            break
+        except ProjectPolicyError:
+            if attempt or not isinstance(model, FleetRouter) or not model.advance():
+                raise
+            # Never forward malformed full candidate or private credentials to the next model.
+            messages.append({"role": "user", "content":
+                             "The proposed change failed local policy validation. "
+                             "Return one valid repair JSON object modifying only approved app source."})
     proposal.update({"verification_task_id": verified_id, "model": completion.model,
                      "provider": completion.provider})
     with sessions.begin() as db:
