@@ -1,0 +1,13 @@
+{
+  "title": "MioAgent verified multiplication demonstration",
+  "requirements": "Create math_ops.py containing a pure multiply(a, b) function that correctly multiplies integer inputs. Use Python standard library only; provide a straightforward readable implementation.",
+  "criteria": [
+    "multiply(2, 3) must equal 6",
+    "multiply(3, 4) must equal 12",
+    "multiply(5, 5) must equal 25"
+  ],
+  "acceptance_tests": {
+    "test_math_ops.py": "import unittest\nfrom math_ops import multiply\n\nclass TestMath(unittest.TestCase):\n    def test_two(self):\n        self.assertEqual(multiply(2, 3), 6)\n    def test_three(self):\n        self.assertEqual(multiply(3, 4), 12)\n    def test_four(self):\n        self.assertEqual(multiply(5, 5), 25)\n"
+  },
+  "max_repairs": 2
+}

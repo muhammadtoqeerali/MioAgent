@@ -22,6 +22,7 @@ from mio.database import (
     create_database,
     utcnow,
 )
+from mio.engineering_engine import EngineeringStop, lock_acceptance_tests
 from mio.llm import ModelRouter
 from mio.project_mode import (
     MAX_REQUIREMENTS,
@@ -47,6 +48,11 @@ class AskCreate(BaseModel):
 class ProjectCreate(BaseModel):
     title: str = Field(min_length=3, max_length=140)
     requirements: str = Field(min_length=20, max_length=MAX_REQUIREMENTS)
+
+
+class ProjectAcceptance(BaseModel):
+    approved: Literal[True]
+    tests: dict[str, str]
 
 
 class ProjectApply(BaseModel):
@@ -394,6 +400,28 @@ def create_app(config: Settings | None = None) -> FastAPI:
             project = Project(title=title, requirements=requirements, status="review",
                               draft_json=json.dumps(checked, ensure_ascii=False))
             db.add(project)
+            db.flush()
+            return serialize_project(project, include_draft=True)
+
+    @app.post("/api/projects/{project_id}/acceptance",
+              dependencies=[Depends(require_token)])
+    def lock_project_tests(project_id: str, payload: ProjectAcceptance, request: Request):
+        """Operator supplies immutable acceptance tests BEFORE file approval."""
+        require_project_feature()
+        if not settings.mio_enable_sandbox_verify:
+            raise HTTPException(status_code=409, detail="Sandbox acceptance tests are disabled")
+        with request.app.state.sessions.begin() as db:
+            project = db.get(Project, project_id)
+            if project is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            if project.status != "review" or not project.draft_json:
+                raise HTTPException(status_code=409, detail="Only a review-stage draft accepts tests")
+            try:
+                approved = lock_acceptance_tests(json.loads(project.draft_json), payload.tests)
+            except (ValueError, EngineeringStop) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            project.draft_json = json.dumps(approved, ensure_ascii=False)
+            project.updated_at = utcnow()
             db.flush()
             return serialize_project(project, include_draft=True)
 
