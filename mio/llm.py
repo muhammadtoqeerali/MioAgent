@@ -118,6 +118,46 @@ class ModelRouter:
                 failures.append(f"{kind} model invalid response ({type(exc).__name__})")
         raise ModelUnavailable("; ".join(failures) or "No permitted provider available")
 
+    async def complete_no_think(self, messages: list[dict[str, str]],
+                                max_tokens: int = 1600) -> Completion:
+        """Qwen-only local review completion using documented Ollama native `think=false`.
+
+        The model's internal thinking is never returned as user-facing content.
+        Use only for a secondary review after installed-model/digest validation.
+        """
+        model = self.settings.mio_local_model
+        if not (isinstance(model, str) and model.startswith("qwen3")
+                and self.settings.mio_model_route == "local"
+                and not self.settings.mio_allow_cloud):
+            raise ModelUnavailable("Direct-answer review requires approved local Qwen3")
+        base = validate_provider_url(self.settings.mio_local_base_url, local=True)
+        limit = min(max_tokens, 3072)
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(240.0, connect=6.0),
+                                         follow_redirects=False, trust_env=False) as client:
+                response = await client.post(
+                    f"{base.removesuffix('/v1')}/api/chat",
+                    json={"model": model, "messages": messages, "stream": False,
+                          "think": False,
+                          "options": {"temperature": 0.2, "num_predict": limit}},
+                )
+                response.raise_for_status()
+                payload = response.json()
+            value = payload.get("message", {}).get("content")
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("No final answer text")
+            return Completion(text=value.strip(), model=model, provider="local",
+                              input_tokens=payload.get("prompt_eval_count"),
+                              output_tokens=payload.get("eval_count"))
+        except httpx.HTTPStatusError as exc:
+            raise ModelUnavailable(f"local Qwen review HTTP {exc.response.status_code}") from exc
+        except httpx.TimeoutException as exc:
+            raise ModelUnavailable("local Qwen review timed out") from exc
+        except httpx.HTTPError as exc:
+            raise ModelUnavailable(f"local Qwen review transport {type(exc).__name__}") from exc
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise ModelUnavailable(f"local Qwen review invalid final response ({type(exc).__name__})") from exc
+
     async def probe(self) -> dict:
         """Non-secret configuration and reachability; no inference and no cloud calls."""
         result = {"configured": self.configured(),

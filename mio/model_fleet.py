@@ -241,6 +241,7 @@ class FleetRouter:
         self.installed = installed
         self.position = 0
         self.events: list[ModelEvent] = []
+        self.prefer_direct_answer = False  # Only opt-in independent Qwen review
 
     def advance(self) -> bool:
         if self.policy is None or self.position + 1 >= len(self.policy.roles[self.role]):
@@ -267,7 +268,11 @@ class FleetRouter:
             config = self.settings.model_copy(update={"mio_local_model": name})
             start = time.monotonic()
             try:
-                output = await ModelRouter(config).complete(messages, max_tokens=max_tokens)
+                model_router = ModelRouter(config)
+                if self.prefer_direct_answer and name.startswith("qwen3"):
+                    output = await model_router.complete_no_think(messages, max_tokens=max_tokens)
+                else:
+                    output = await model_router.complete(messages, max_tokens=max_tokens)
                 self.events.append(ModelEvent(self.role, name, round(time.monotonic() - start, 3), True, "completed"))
                 if output.provider != "local" or output.model != name:
                     raise FleetError("Unexpected provider/model identity")
