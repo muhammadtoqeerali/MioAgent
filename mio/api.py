@@ -33,6 +33,7 @@ from mio.project_mode import (
 )
 from mio.project_tasks import mark_project_canceled_for_task
 from mio.repair_tasks import failed_verification
+from mio.studio_api import register_studio_routes
 from mio.workers import reset_interrupted_tasks, worker_loop
 
 
@@ -522,5 +523,5 @@ def create_app(config: Settings | None = None) -> FastAPI:
             return serialize_task(task)
 
     register_intelligence_routes(app, require_token)
-
+    register_studio_routes(app, settings, require_token)
     return app

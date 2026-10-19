@@ -97,6 +97,7 @@ export default function Home() {
         <div className="brand"><span className="brand-mark">✦</span><div><strong>MioAgent</strong><small>COMMAND CENTER</small></div></div>
         <div className="nav-label">WORKSPACE</div>
         <button className={`nav-item ${view === "overview" ? "active" : ""}`} onClick={() => setView("overview")}><span>◈</span> Overview</button>
+        <a className="nav-item" href="/studio"><span>✦</span> MioAgent Studio v0.4H</a>
         <a className="nav-item" href="/assistant"><span>✦</span> AI Assistant</a>
         <a className="nav-item" href="/projects"><span>▣</span> Project Mode</a>
         <a className="nav-item" href="/intelligence"><span>◉</span> Intelligence &amp; Engineering <small>v0.4G</small></a>
