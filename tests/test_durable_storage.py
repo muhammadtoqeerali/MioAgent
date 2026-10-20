@@ -136,6 +136,7 @@ def test_reject_invalid_limit(tmp_path, monkeypatch):
 def test_private_directory_requires_owner_only(tmp_path):
     data = tmp_path / "data"
     data.mkdir(mode=0o755)
+    data.chmod(0o755)  # Ensure unsafe permissions under umask 077.
     with pytest.raises(ds.StorageError, match="0700"):
         ds._private_directory(data)
 

@@ -126,6 +126,7 @@ export default function Studio() {
     <aside className={styles.side}>
       <div className={styles.logo}>✦ MioAgent <span>STUDIO v0.4I</span></div>
       <a href="/" className={styles.link}>← Dashboard</a>
+      <a href="/work" className={styles.link}>◈ Persistent Projects &amp; Work</a>
       <a href="/intelligence" className={styles.link}>◇ Engineering &amp; models</a>
       <a href="/assistant" className={styles.link}>◇ Conversation history</a>
       <div className={styles.subheading}>TOOLS</div>
