@@ -93,7 +93,8 @@ async def _duckduckgo(query: str, client: httpx.AsyncClient) -> list[dict]:
         return []
 
 
-async def web_search(query: str, client: httpx.AsyncClient | None = None) -> list[dict]:
+async def _raw_web_search(query: str, client: httpx.AsyncClient | None = None) -> list[dict]:
+    """Legacy Bing RSS and DuckDuckGo transport, filtered by the new quality layer."""
     """Fetch search snippets only from a fixed public endpoint; no arbitrary URL fetching."""
     if not isinstance(query, str) or not 3 <= len(query.strip()) <= 350:
         raise StudioError("Search requires a question of 3–350 characters")
@@ -130,6 +131,13 @@ async def web_search(query: str, client: httpx.AsyncClient | None = None) -> lis
     finally:
         if owned:
             await client.aclose()
+
+
+async def web_search(query: str, client: httpx.AsyncClient | None = None) -> list[dict]:
+    """Search the actual topic; reject irrelevant provider homepages."""
+    from mio.studio_search_quality import quality_search
+
+    return await quality_search(query, client, _raw_web_search, _duckduckgo)
 
 
 async def vision_answer(prompt: str, images: list[bytes], model_names: list[str],
