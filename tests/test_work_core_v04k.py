@@ -126,8 +126,18 @@ def test_real_execution_records_search_and_review(tmp_path, monkeypatch):
     monkeypatch.setattr(work_agent, "FleetRouter", FakeFleet)
     search = AsyncMock(return_value=[{"ref":"W1", "title":"Humanoid study", "url":"https://example.edu/paper", "snippet":"Robotics evaluation"}])
     monkeypatch.setattr(work_agent, "web_search", search)
+    monkeypatch.setattr(
+        work_agent, "enrich_sources",
+        AsyncMock(side_effect=lambda sources: [
+            {**source, "page_verified": True,
+             "page_excerpt": "Retrieved HTML page excerpt for this test"}
+            for source in sources
+        ]),
+    )
     result = asyncio.run(work_agent.execute(base, run["id"], SimpleNamespace()))
     assert result["state"] == "answered"
+    assert result["sources"][0]["page_verified"] is True
+    assert "web.fetch" in [e["phase"] for e in result["events"]]
     assert result["mode"] == "research"
     assert result["sources"][0]["ref"] == "W1"
     assert "model.review" in [x["phase"] for x in result["events"]]
@@ -205,8 +215,18 @@ def test_work_research_search_retry_v04k(tmp_path, monkeypatch):
           "url": "https://example.edu/study", "snippet": "Humanoid robotics research"}],
     ])
     monkeypatch.setattr(work_agent, "web_search", search)
+    monkeypatch.setattr(
+        work_agent, "enrich_sources",
+        AsyncMock(side_effect=lambda sources: [
+            {**source, "page_verified": True,
+             "page_excerpt": "Retrieved HTML page excerpt for this test"}
+            for source in sources
+        ]),
+    )
     result = asyncio.run(work_agent.execute(base, run["id"], SimpleNamespace()))
     assert result["state"] == "answered"
+    assert result["sources"][0]["page_verified"] is True
+    assert "web.fetch" in [e["phase"] for e in result["events"]]
     assert [call.args[0] for call in search.await_args_list] == [
         prompt, "humanoid robot manipulation research",
     ]
@@ -226,3 +246,67 @@ def test_work_research_retry_bounded_v04k(tmp_path, monkeypatch):
     assert result["state"] == "failed"
     assert search.await_count == 2
     assert [e["phase"] for e in result["events"]].count("web.retry") == 1
+
+
+def test_work_long_research_prompt_uses_bounded_search_query(
+    tmp_path, monkeypatch,
+):
+    prompt = (
+        "Search the web for the official Python 3 math module "
+        "documentation for sqrt, sin, cos and log. "
+        "Research what these functions do, their input "
+        "requirements and relevant domain restrictions. "
+        "Use actual retrieved public webpage excerpts when "
+        "available and cite the associated [W1] to [W6] "
+        "references accurately. Clearly state if a source "
+        "could not be opened."
+    )
+    assert len(prompt) == 354
+
+    base = root(tmp_path)
+    project = create_project(base, "Long Query Regression", "")
+    task = create_run(base, project["id"], prompt)
+
+    monkeypatch.setattr(work_agent, "FleetRouter", FakeFleet)
+
+    search = AsyncMock(return_value=[{
+        "ref": "W1",
+        "title": "Python math module documentation",
+        "url": "https://docs.python.org/3/library/math.html",
+        "snippet": "Python sqrt sin cos log math functions",
+    }])
+
+    monkeypatch.setattr(work_agent, "web_search", search)
+
+    monkeypatch.setattr(
+        work_agent, "enrich_sources",
+        AsyncMock(side_effect=lambda sources: [
+            {
+                **source,
+                "page_verified": True,
+                "page_excerpt": "Verified public Python mathematical "
+                                "documentation excerpt used in this test.",
+            }
+            for source in sources
+        ]),
+    )
+
+    outcome = asyncio.run(
+        work_agent.execute(base, task["id"], SimpleNamespace())
+    )
+
+    assert outcome["state"] == "answered"
+    assert search.await_count == 1
+
+    query = search.await_args.args[0]
+    assert 3 <= len(query) <= 350
+    assert "Python" in query
+    assert "math" in query
+
+    assert outcome["sources"][0]["page_verified"] is True
+    assert "web.query" in [
+        item["phase"] for item in outcome["events"]
+    ]
+    assert "web.fetch" in [
+        item["phase"] for item in outcome["events"]
+    ]

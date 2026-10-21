@@ -85,8 +85,17 @@ def test_work_falls_back_to_scholarly_metadata_only_when_explicit(tmp_path, monk
     }])
     monkeypatch.setattr(work_agent, "web_search", searches)
     monkeypatch.setattr(work_agent, "scholarly_search", scholarly)
+    monkeypatch.setattr(
+        work_agent, "enrich_sources",
+        AsyncMock(side_effect=lambda sources: [
+            {**source, "page_verified": False,
+             "evidence_scope": "Crossref metadata, not retrieved page"}
+            for source in sources
+        ]),
+    )
     result = asyncio.run(work_agent.execute(base, task["id"], SimpleNamespace()))
-    assert result["state"] == "answered"
+    assert result["state"] == "needs_review"
+    assert "evidence.check" in [e["phase"] for e in result["events"]]
     assert searches.await_count == 2
     scholarly.assert_awaited_once_with("humanoid robot manipulation research")
     assert "web.scholarly" in [event["phase"] for event in result["events"]]
