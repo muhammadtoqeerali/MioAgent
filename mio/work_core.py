@@ -180,13 +180,14 @@ def link_file(root: Path, project_id: str, file_id: str) -> dict:
     return value
 
 
-def create_run(root: Path, project_id: str, prompt: str) -> dict:
+def create_run(root: Path, project_id: str, prompt: str, *, engineering: bool = False) -> dict:
     if not isinstance(prompt, str) or not 4 <= len(prompt.strip()) <= 6000:
         raise WorkStop("Task instructions must be 4–6000 characters")
     project_info(root, project_id)
     now = int(time.time())
     value = {"id": uuid.uuid4().hex, "project": project_id, "prompt": prompt.strip(),
-             "state": "queued", "mode": "pending", "created": now, "updated": now}
+             "state": "queued", "mode": "engineering_queued" if engineering else "pending",
+             "created": now, "updated": now}
     with db(root) as conn:
         conn.execute("BEGIN IMMEDIATE")
         running = conn.execute("SELECT count(*) FROM runs WHERE state IN ('queued','running')").fetchone()[0]

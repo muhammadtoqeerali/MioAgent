@@ -19,6 +19,7 @@ from mio.studio_files import StudioError, read_attachment
 from mio.studio_search_quality import search_query
 from mio.studio_tools import web_search
 from mio.work_core import RUNTIME, WorkStop, event, project_info, run_info, update
+from mio.work_engineering import execute_engineering
 
 MAX_CONTEXT = 18_000
 MAX_SOURCES = 6
@@ -63,6 +64,8 @@ async def execute(root: Path, run_id: str, settings: Settings) -> dict:
     record = run_info(root, run_id)
     if record["state"] != "queued":
         raise WorkStop("Only a new queued task can be executed")
+    if record["mode"] == "engineering_queued":
+        return await execute_engineering(root, run_id, settings)
     info = project_info(root, record["project"])
     prompt = record["prompt"]
     update(root, run_id, "running", mode="planning")

@@ -38,10 +38,14 @@ async function forward(req: NextRequest, path: string[]) {
       cache: "no-store",
       signal: AbortSignal.timeout(15000),
     });
-    return new NextResponse(await response.text(), {
+    const contentType = response.headers.get("Content-Type") ?? "application/json";
+    const disposition = response.headers.get("Content-Disposition");
+    const binary = contentType.startsWith("application/zip");
+    return new NextResponse(binary ? await response.arrayBuffer() : await response.text(), {
       status: response.status,
-      headers: { "Content-Type": response.headers.get("Content-Type") ?? "application/json",
-                 "Cache-Control": "no-store" },
+      headers: { "Content-Type": contentType,
+                 "Cache-Control": "no-store",
+                 ...(disposition ? { "Content-Disposition": disposition } : {}) },
     });
   } catch {
     return NextResponse.json({ detail: "MioAgent API unavailable" }, { status: 502 });

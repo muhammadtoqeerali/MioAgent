@@ -24,6 +24,7 @@ from mio.work_core import (
     remove_memory,
     run_info,
 )
+from mio.work_engineering import read_artifact, zip_artifact
 from mio.work_lifecycle import is_archived, listed_projects, register_work_lifecycle
 
 
@@ -43,6 +44,8 @@ class AssetNew(BaseModel):
 
 class TaskNew(BaseModel):
     prompt: str = Field(min_length=4, max_length=6000)
+    task_type: Literal["bounded", "engineering"] = "bounded"
+    approved: bool = False
 
 
 def register_work_routes(app: FastAPI, settings: Settings, require_token: Callable,
@@ -62,7 +65,7 @@ def register_work_routes(app: FastAPI, settings: Settings, require_token: Callab
         return {"release": "v0.4K", "projects": listed_projects(root, archived=archived), "skills": SKILLS,
                 "permissions": {"host_shell": False, "host_file_scan": False,
                                 "arbitrary_browser": False, "public_research": True,
-                                "owner_uploaded_files": True},
+                                "owner_uploaded_files": True, "python_engineering": True},
                 "note": "Persistent work sessions; no unrestricted computer access"}
 
     @app.post("/api/work/projects", dependencies=auth, status_code=201)
@@ -106,7 +109,10 @@ def register_work_routes(app: FastAPI, settings: Settings, require_token: Callab
         try:
             if is_archived(root, project_id):
                 raise WorkStop("Restore this archived project before starting a run")
-            run = create_run(root, project_id, payload.prompt)
+            if payload.task_type == "engineering" and not payload.approved:
+                raise WorkStop("Explicit approval required for isolated Python engineering")
+            run = create_run(root, project_id, payload.prompt,
+                             engineering=payload.task_type == "engineering")
         except WorkStop as exc:
             raise HTTPException(409, detail=str(exc)) from exc
         # Persistent worker owns the queue; browser/API process is not a task host.
@@ -118,6 +124,30 @@ def register_work_routes(app: FastAPI, settings: Settings, require_token: Callab
             return run_info(root, run_id)
         except WorkStop as exc:
             raise HTTPException(404, detail="Work run unavailable") from exc
+
+    @app.get("/api/work/runs/{run_id}/files", dependencies=auth)
+    def engineering_files(run_id: str):
+        try:
+            run = run_info(root, run_id)
+            if run["mode"] != "engineering" or not run["result"]:
+                raise WorkStop("Engineering files are not ready")
+            metadata, _files = read_artifact(root, run_id)
+            return metadata
+        except (WorkStop, OSError, ValueError) as exc:
+            raise HTTPException(404, detail="Engineering files unavailable") from exc
+
+    @app.get("/api/work/runs/{run_id}/download", dependencies=auth)
+    def engineering_download(run_id: str):
+        try:
+            run = run_info(root, run_id)
+            if run["mode"] != "engineering" or not run["result"]:
+                raise WorkStop("Engineering files are not ready")
+            archive = zip_artifact(root, run_id)
+            return Response(content=archive, media_type="application/zip",
+                            headers={"Cache-Control": "no-store", "Content-Disposition":
+                                     f'attachment; filename="mio-work-{run_id[:8]}.zip"'})
+        except (WorkStop, OSError, ValueError) as exc:
+            raise HTTPException(404, detail="Engineering ZIP unavailable") from exc
 
     @app.get("/api/work/runs/{run_id}/artifact", dependencies=auth)
     def artifact(run_id: str):

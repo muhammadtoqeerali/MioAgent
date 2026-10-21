@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException
 
 from mio.studio_files import StudioError
 from mio.work_core import RUNTIME, WorkStop, _id, db
+from mio.work_engineering import delete_artifact
 
 
 def _table(conn) -> None:
@@ -115,8 +116,10 @@ def delete_project(root: Path, project_id: str) -> dict:
                 # Stored bytes must be authentic; scanned PDFs need not be parsed.
                 _check_upload_integrity(file_id)
                 orphan.append(file_id)
+        run_ids = [row[0] for row in conn.execute(
+            "SELECT id FROM runs WHERE project=?", (project_id,))]
         conn.execute("DELETE FROM events WHERE run IN (SELECT id FROM runs WHERE project=?)", (project_id,))
-        run_count = conn.execute("SELECT count(*) FROM runs WHERE project=?", (project_id,)).fetchone()[0]
+        run_count = len(run_ids)
         conn.execute("DELETE FROM runs WHERE project=?", (project_id,))
         conn.execute("DELETE FROM assets WHERE project=?", (project_id,))
         conn.execute("DELETE FROM memories WHERE project=?", (project_id,))
@@ -136,9 +139,16 @@ def delete_project(root: Path, project_id: str) -> dict:
             deleted += 1
         except (OSError, WorkStop):
             undeleted.append(file_id)
+    incomplete_artifacts = []
+    for run_id in run_ids:
+        try:
+            delete_artifact(root, run_id)
+        except (OSError, WorkStop, ValueError):
+            incomplete_artifacts.append(run_id)
     return {"deleted": True, "runs_deleted": run_count,
             "uploads_deleted": deleted, "shared_uploads_retained": shared,
-            "uploads_cleanup_incomplete": undeleted}
+            "uploads_cleanup_incomplete": undeleted,
+            "artifacts_cleanup_incomplete": incomplete_artifacts}
 
 
 def register_work_lifecycle(app: FastAPI, require_token: Callable, root: Path) -> None:
