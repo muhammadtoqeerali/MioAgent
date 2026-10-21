@@ -52,10 +52,28 @@ def start() -> None:
         raise RuntimeError("Unsafe runtime permissions")
     if PID.exists() and not PID.is_symlink():
         PID.unlink()  # Stale PID file only, not its process
+    # A standalone manager does not inherit the native API's settings.
+    # Load only the verified private token and local model configuration.
+    if __package__:
+        from scripts.native_runtime import get_token, load_model_config
+    else:
+        from native_runtime import get_token, load_model_config
+
+    worker_env = os.environ.copy()
+    worker_env.update({
+        "MIO_API_TOKEN": get_token(),
+        "MIO_LOCAL_MODEL": "",
+        "MIO_LOCAL_BASE_URL": "http://127.0.0.1:11434/v1",
+        "MIO_MODEL_ROUTE": "local",
+        "MIO_ALLOW_CLOUD": "false",
+        "MIO_CLOUD_API_KEY": "",
+    })
+    worker_env.update(load_model_config())
+
     with LOG.open("ab", buffering=0) as log:
         proc = subprocess.Popen([sys.executable, "-m", "mio.work_worker"], cwd=PROJECT,
                                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                start_new_session=True, close_fds=True)
+                                env=worker_env, start_new_session=True, close_fds=True)
     PID.write_text(f"{proc.pid}\n")
     PID.chmod(0o600)
     time.sleep(0.5)
