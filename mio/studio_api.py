@@ -38,6 +38,10 @@ class UploadRequest(BaseModel):
     base64: str = Field(min_length=1, max_length=11_200_000)
 
 
+class IntentRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=12000)
+
+
 class StudioAsk(BaseModel):
     prompt: str = Field(min_length=3, max_length=6000)
     mode: Literal["auto", "chat", "research", "analyze", "image"] = "auto"
@@ -111,6 +115,12 @@ async def _image_task(root: Path, job_id: str, prompt: str, checkpoint: str) -> 
 def register_studio_routes(app: FastAPI, settings: Settings, require_token: Callable,
                            root: Path = RUNTIME) -> None:
     auth = [Depends(require_token)]
+
+    @app.post("/api/studio/intent", dependencies=auth)
+    def intent(payload: IntentRequest):
+        """Cheap server-authoritative intent detection; no inference/tool action."""
+        action = route_intent(payload.prompt)
+        return {"mode": "image" if action == "image" else "chat"}
 
     @app.get("/api/studio/capabilities", dependencies=auth)
     async def capabilities():

@@ -391,6 +391,17 @@ def start() -> None:
             stop_service("dashboard")
             stop_service("api")
             raise RuntimeError("Dashboard proxy failed authentication to API") from exc
+        # Optional independently managed services. Work worker is essential to
+        # process queued runs; ComfyUI is optional and never downloads weights.
+        for manager, label, budget in (("manage_work_worker.py", "Work worker", 15),
+                                       ("manage_image_service.py", "ComfyUI", 115)):
+            try:
+                result = subprocess.run([str(python), str(PROJECT / "scripts" / manager), "start"],
+                                        cwd=PROJECT, env=env, check=True, capture_output=True,
+                                        text=True, timeout=budget)
+                print(result.stdout.strip())
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                print(f"  WARNING: {label} did not start: {type(exc).__name__}; check manager status/log")
         print("\nSUCCESS: native MioAgent services are running")
         print("  Dashboard:", DASH_URL)
         print("  API health:", f"{API_URL}/health")
@@ -418,6 +429,15 @@ def status() -> None:
         except (OSError, HTTPError, URLError):
             print(f"{name} HTTP: unavailable")
     print("Runtime:", RUNTIME)
+    for manager, label in (("manage_work_worker.py", "Work worker"),
+                           ("manage_image_service.py", "ComfyUI")):
+        try:
+            outcome = subprocess.run([str(Path.home() / ".cache/mioagent/phase1-venv/bin/python"),
+                                      str(PROJECT / "scripts" / manager), "status"],
+                                     check=False, cwd=PROJECT, capture_output=True, text=True, timeout=8)
+            print(label + ":", outcome.stdout.strip() if outcome.returncode == 0 else "unavailable")
+        except (OSError, subprocess.TimeoutExpired):
+            print(label + ": status unavailable")
 
 
 def smoke() -> None:

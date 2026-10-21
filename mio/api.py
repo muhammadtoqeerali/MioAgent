@@ -11,6 +11,11 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
+from mio.chat_lifecycle import (
+    is_archived,
+    list_chat_query,
+    register_chat_lifecycle,
+)
 from mio.config import Settings
 from mio.dashboard_insights import register_intelligence_routes
 from mio.database import (
@@ -121,6 +126,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
         if not authorization or not secrets.compare_digest(authorization, expected):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
+    register_chat_lifecycle(app, require_token)
+
     @app.get("/health")
     def health():
         return {"ok": True, "service": "mioagent-api", "version": "0.2.0"}
@@ -147,11 +154,9 @@ def create_app(config: Settings | None = None) -> FastAPI:
         return await router.probe()
 
     @app.get("/api/assistant/conversations", dependencies=[Depends(require_token)])
-    def list_conversations(request: Request):
+    def list_conversations(request: Request, archived: bool = False):
         with request.app.state.sessions() as db:
-            items = db.scalars(
-                select(Conversation).order_by(Conversation.updated_at.desc()).limit(100)
-            ).all()
+            items = db.scalars(list_chat_query(archived=archived)).all()
             return {"conversations": [
                 {"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat()}
                 for c in items
@@ -184,6 +189,8 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 conversation = db.get(Conversation, payload.conversation_id)
                 if conversation is None:
                     raise HTTPException(status_code=404, detail="Conversation not found")
+                if is_archived(db, conversation.id):
+                    raise HTTPException(status_code=409, detail="Restore this archived chat before replying")
             else:
                 conversation = Conversation(title=content[:100])
                 db.add(conversation)

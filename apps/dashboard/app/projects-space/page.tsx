@@ -15,18 +15,25 @@ async function fileBase64(file:File){
 
 export default function ProjectsSpace(){
   const [projects,setProjects]=useState<WorkProject[]>([]);
+  const [showArchived,setShowArchived]=useState(false);
   const [id,setId]=useState<string|null>(null);
   const [detail,setDetail]=useState<WorkProjectDetail|null>(null);
   const [runs,setRuns]=useState<Record<string,WorkRun>>({});
   const [prompt,setPrompt]=useState("");const [name,setName]=useState("");const [instructions,setInstructions]=useState("");
   const [create,setCreate]=useState(false);const [knowledge,setKnowledge]=useState(false);
   const [memory,setMemory]=useState("");const [busy,setBusy]=useState(false);const [error,setError]=useState("");
-  const upload=useRef<HTMLInputElement>(null);const bottom=useRef<HTMLDivElement>(null);
+  const upload=useRef<HTMLInputElement>(null);
+  const thread=useRef<HTMLDivElement>(null);
+  const followLatest=useRef(true);
+  const trackScroll=()=>{
+    const node=thread.current;
+    if(node)followLatest.current=node.scrollHeight-node.scrollTop-node.clientHeight<120;
+  };
   const refresh=useCallback(async()=>{
-    const next=await mioApi<{projects:WorkProject[]}>("work/overview");
+    const next=await mioApi<{projects:WorkProject[]}>(`work/overview?archived=${showArchived}`);
     const visible=next.projects.filter(p=>!isDelegation(p.title));
-    setProjects(visible);setId(old=>old??visible[0]?.id??null);
-  },[]);
+    setProjects(visible);setId(old=>visible.some(p=>p.id===old)?old:visible[0]?.id??null);
+  },[showArchived]);
   const load=useCallback(async(project:string)=>{
     const info=await mioApi<WorkProjectDetail>(`work/projects/${project}`);
     setDetail(info);
@@ -48,11 +55,14 @@ export default function ProjectsSpace(){
     void poll();const timer=setInterval(()=>void poll(),5000);
     return()=>{active=false;clearInterval(timer);};
   },[id,detail?.id]);
-  useEffect(()=>{bottom.current?.scrollIntoView({behavior:"smooth",block:"end"});},[detail?.runs.length,runs]);
+  useEffect(()=>{
+    const node=thread.current;
+    if(node && followLatest.current)node.scrollTop=node.scrollHeight;
+  },[detail?.runs.length,runs]);
   async function newProject(){
     if(busy||name.trim().length<3)return;
     setBusy(true);setError("");
-    try{const p=await mioApi<WorkProject>("work/projects",postJson({title:name.trim(),instructions:instructions.trim()}));setName("");setInstructions("");setCreate(false);setId(p.id);await refresh();}
+    try{const p=await mioApi<WorkProject>("work/projects",postJson({title:name.trim(),instructions:instructions.trim()}));setName("");setInstructions("");setCreate(false);setId(p.id);if(showArchived)setShowArchived(false);else await refresh();}
     catch(e){setError(e instanceof Error?e.message:"Project creation failed");}finally{setBusy(false);}
   }
   async function send(){
@@ -85,21 +95,36 @@ export default function ProjectsSpace(){
     try{await mioApi(`work/projects/${id}/memory/${memoryId}`,{method:"DELETE"});await load(id);}
     catch(e){setError(e instanceof Error?e.message:"Could not remove memory");}finally{setBusy(false);}
   }
+  async function projectAction(action:"archive"|"restore"|"delete"){
+    if(!id||busy)return;
+    if(action==="delete" && !window.confirm("Permanently delete this project, every discussion, memory, and uniquely linked upload? This cannot be undone."))return;
+    setBusy(true);setError("");
+    try{
+      const result=await mioApi<{uploads_cleanup_incomplete?:string[]}>(`work/projects/${id}${action==="delete"?"":`/${action}`}`,{method:action==="delete"?"DELETE":"POST"});
+      setId(null);setDetail(null);setRuns({});setKnowledge(false);await refresh();
+      if(result.uploads_cleanup_incomplete?.length)setError("Some uploaded files could not be removed; inspect server logs and storage.");
+    }catch(e){setError(e instanceof Error?e.message:"Could not update project");}finally{setBusy(false);}
+  }
   const items=detail?.runs.slice(0,16).reverse()??[];
   return <UIShell section="projects" title="Projects" subtitle="Ongoing conversations with shared instructions and files">
     <div className={s.stage}>
       <div className={s.split}>
         <aside className={s.panel} aria-label="Project list"><div className={s.panelTop}><span className={s.panelTitle}>YOUR PROJECTS</span><button className={s.iconButton} aria-label="Create project" onClick={()=>setCreate(true)}>＋ New</button></div>
-          {projects.map(p=><button key={p.id} className={`${s.listButton} ${p.id===id?s.selected:""}`} onClick={()=>{setId(p.id);setKnowledge(false);}}>{p.title}</button>)}
+          <button className={s.iconButton} onClick={()=>{setId(null);setShowArchived(v=>!v);}}>{showArchived?"← Active projects":"Archived projects"}</button>
+          {projects.map(p=><button key={p.id} className={`${s.listButton} ${p.id===id?s.selected:""}`} onClick={()=>{followLatest.current=true;setId(p.id);setKnowledge(false);}}>{p.title}</button>)}
           {!projects.length && <p className={s.hint}>Create your first project to save its files and responses.</p>}
         </aside>
         <div className={s.body}>
           {!id?<div className={s.centered}><span className={s.welcomeIcon}>▦</span><h2>Keep your ideas together.</h2><p>Give MioAgent context once: instructions, files and saved memories stay attached to your project.</p><button className={s.primary} onClick={()=>setCreate(true)}>Create project</button></div>:<>
-            <div className={s.heading}><div className={s.pillRow} style={{justifyContent:"space-between"}}><div><h2>{detail?.title||"Opening project…"}</h2><p>{detail?.instructions?detail.instructions.slice(0,130):"A private space for your ongoing research and files"}</p></div><button className={s.secondary} onClick={()=>setKnowledge(true)}>▤ Files & instructions</button></div></div>
-            <div className={s.scroll}><div className={s.narrow}>
+            <div className={s.heading}><div className={s.pillRow} style={{justifyContent:"space-between"}}><div><h2>{detail?.title||"Opening project…"}</h2><p>{detail?.instructions?detail.instructions.slice(0,130):"A private space for your ongoing research and files"}</p></div><div className={s.pillRow}>
+                <button className={s.secondary} onClick={()=>setKnowledge(true)}>▤ Files & instructions</button>
+                <button className={s.iconButton} disabled={busy} onClick={()=>void projectAction(showArchived?"restore":"archive")}>{showArchived?"Restore":"Archive"}</button>
+                <button className={s.iconButton} disabled={busy} onClick={()=>void projectAction("delete")}>Delete</button>
+              </div></div></div>
+            <div className={s.scroll} ref={thread} onScroll={trackScroll}><div className={s.narrow}>
               {!items.length && <div className={s.centered}><span className={s.welcomeIcon}>✳</span><h2>Start a project discussion</h2><p>Ask questions using this project's instructions and linked documents.</p></div>}
               {items.map(item=>{const run=runs[item.id];return <div key={item.id} className={s.bubbleRow}><div className={s.userBubble}>{item.prompt}</div><div className={s.assistantBubble}><span className={s.role}>✳ MioAgent <span className={`${s.state} ${item.state==="needs_review"?s.warning:item.state==="failed"?s.failed:""}`}>{item.state.replaceAll("_"," ")}</span></span>{run?.result?<RichText text={run.result}/>:<div className={s.loading}>{done(item.state)?run?.error??"Could not load result":"Running on Ubuntu server…"}</div>}{run?.sources&&run.sources.length>0&&<div>{run.sources.map(src=><a className={s.source} key={src.ref} href={src.url} target="_blank" rel="noopener noreferrer">[{src.ref}] {src.title}</a>)}</div>}{run?.result&&<div className={s.answerNote}><span>{run.model||"Local model"}</span><a className={s.textLink} href={`/api/proxy/work/runs/${item.id}/artifact`} target="_blank" rel="noopener noreferrer">Open Markdown ↗</a></div>}</div></div>;})}
-              <div ref={bottom}/>{error&&<p className={s.error} role="alert">{error}</p>}
+              {error&&<p className={s.error} role="alert">{error}</p>}
             </div></div>
             <div className={s.composerArea}><div className={s.composer}><textarea aria-label="Message project" value={prompt} onChange={e=>setPrompt(e.target.value)} rows={2} maxLength={6000} disabled={busy} placeholder="Message this project…" onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();void send();}}}/><div className={s.composeBottom}><div className={s.pillRow}><input hidden type="file" multiple ref={upload} onChange={e=>void attach(e.target.files)}/><button className={s.iconButton} aria-label="Attach project files" disabled={busy} onClick={()=>upload.current?.click()}>＋ Attach files</button><span className={s.hint}>Saved with project</span></div><button className={s.send} disabled={busy||prompt.trim().length<4} onClick={()=>void send()}>Send ↑</button></div></div><p className={s.note}>Project instructions, approved memories and files are used. Automatic cross-turn chat reasoning is not yet implemented.</p></div>
           </>}

@@ -11,6 +11,7 @@ const blockNames = ["Host terminal", "Unapproved folders", "Browser automation",
 
 export default function WorkMode(){
   const [overview,setOverview]=useState<WorkOverview|null>(null);
+  const [showArchived,setShowArchived]=useState(false);
   const [selected,setSelected]=useState<string|null>(null);
   const [detail,setDetail]=useState<WorkProjectDetail|null>(null);
   const [run,setRun]=useState<WorkRun|null>(null);
@@ -19,9 +20,9 @@ export default function WorkMode(){
   const [kind,setKind]=useState<"supported"|"computer">("supported");
   const [ack,setAck]=useState(false);const [busy,setBusy]=useState(false);const [error,setError]=useState("");
   const refresh=useCallback(async()=>{
-    const next=await mioApi<WorkOverview>("work/overview");setOverview(next);
-    setSelected(old=>old??next.projects.find(p=>isDelegation(p.title))?.id??null);
-  },[]);
+    const next=await mioApi<WorkOverview>(`work/overview?archived=${showArchived}`);setOverview(next);
+    setSelected(old=>next.projects.some(p=>p.id===old&&isDelegation(p.title))?old:next.projects.find(p=>isDelegation(p.title))?.id??null);
+  },[showArchived]);
   useEffect(()=>{const params=new URLSearchParams(window.location.search);const project=params.get("project");if(project && /^[0-9a-f]{32}$/.test(project))setSelected(project);void refresh().catch((e:Error)=>setError(e.message));},[refresh]);
   useEffect(()=>{
     if(!selected){setDetail(null);setRun(null);return;}
@@ -36,6 +37,15 @@ export default function WorkMode(){
     };
     void tick();const timer=setInterval(()=>void tick(),3300);return()=>{active=false;clearInterval(timer);};
   },[selected]);
+  async function assignmentAction(action:"archive"|"restore"|"delete"){
+    if(!selected||busy)return;
+    if(action==="delete" && !window.confirm("Permanently delete this Work assignment, recorded events and resulting drafts from the MioAgent backend? This cannot be undone."))return;
+    setBusy(true);setError("");
+    try{
+      await mioApi(`work/projects/${selected}${action==="delete"?"":`/${action}`}`, {method:action==="delete"?"DELETE":"POST"});
+      setSelected(null);setRun(null);setDetail(null);await refresh();
+    }catch(e){setError(e instanceof Error?e.message:"Work assignment could not be updated");}finally{setBusy(false);}
+  }
   const jobs=overview?.projects.filter(p=>isDelegation(p.title))??[];
   const canStart=kind==="supported"&&ack&&goal.trim().length>=8&&title.trim().length>=3&&acceptance.trim().length>=8&&!busy&&overview?.permissions.public_research===true;
   async function delegate(){
@@ -44,7 +54,7 @@ export default function WorkMode(){
     try{
       const instructions=["Owner-delegated bounded task; not authorized for terminal/browser/host folders.","Desired outcome:",goal.trim(),"Acceptance criteria:",acceptance.trim(),"Stop if requested capabilities are not available; do not claim unsupported work succeeded."].join("\n");
       const task=await mioApi<WorkProject>("work/projects",postJson({title:delegationTitle(title.trim()),instructions:instructions.slice(0,6000)}));
-      setSelected(task.id);setCreate(false);await refresh();
+      setSelected(task.id);setCreate(false);if(showArchived)setShowArchived(false);else await refresh();
       const request=`${goal.trim()}\n\nAcceptance criteria: ${acceptance.trim()}\nUse only available authorized tools. Report unsupported steps explicitly.`;
       try{await mioApi(`work/projects/${task.id}/runs`,postJson({prompt:request.slice(0,6000)}));}
       catch(e){setError(`Work item saved, but task did not start: ${e instanceof Error?e.message:"Unknown error"}`);}
@@ -56,15 +66,20 @@ export default function WorkMode(){
     <section className={s.stage}>
       <div className={s.split}>
         <aside className={s.panel}><div className={s.panelTop}><span className={s.panelTitle}>WORK ASSIGNMENTS</span><button className={s.iconButton} onClick={()=>setCreate(true)}>＋ New</button></div>
+          <button className={s.iconButton} onClick={()=>{setSelected(null);setShowArchived(v=>!v);}}>{showArchived?"← Active assignments":"Archived assignments"}</button>
           {jobs.map(job=><button key={job.id} className={`${s.listButton} ${selected===job.id?s.selected:""}`} onClick={()=>setSelected(job.id)}>{job.title.replace(/^Work · /,"")}</button>)}
           {!jobs.length&&<p className={s.hint}>Delegated jobs appear here and remain saved after closing the browser.</p>}
         </aside>
         <div className={s.body}>
           {!selected?<div className={s.centered}><span className={s.welcomeIcon}>✳</span><h2>Give work to MioAgent.</h2><p>Define the goal and acceptance criteria. MioAgent will execute tasks supported by its current permissions and record the outcome.</p><button className={s.primary} onClick={()=>setCreate(true)}>New Work assignment</button><div className={s.safety}>Autonomous engineering and permissioned computer access are not yet installed. Work currently supports bounded research, drafts and linked-file analysis.</div></div>:<>
-            <div className={s.heading}><div className={s.pillRow} style={{justifyContent:"space-between"}}><div><h2>{detail?.title.replace(/^Work · /,"")||"Loading assignment…"}</h2><p>Server-backed activity · Saved in private SQLite</p></div><a className={s.secondary} href={`/control-room?project=${selected}`}>View Control Room ↗</a></div></div>
+            <div className={s.heading}><div className={s.pillRow} style={{justifyContent:"space-between"}}><div><h2>{detail?.title.replace(/^Work · /,"")||"Loading assignment…"}</h2><p>Server-backed activity · Saved in private SQLite</p></div><div className={s.pillRow}>
+                <a className={s.secondary} href={`/control-room?project=${selected}`}>Control Room ↗</a>
+                <button className={s.iconButton} disabled={busy} onClick={()=>void assignmentAction(showArchived?"restore":"archive")}>{showArchived?"Restore":"Archive"}</button>
+                <button className={s.iconButton} disabled={busy} onClick={()=>void assignmentAction("delete")}>Delete</button>
+              </div></div></div>
             <div className={s.scroll}><div className={s.narrow}>
-              <div className={s.notice}><strong>Work engine status:</strong> tasks remain active after browser disconnection while FastAPI is running. If the API process restarts, unfinished tasks are recorded as interrupted; no automatic resume is implemented yet.</div>
-              {run?<><div className={s.card}><div className={s.pillRow} style={{justifyContent:"space-between"}}><strong>Supervisor record</strong><span className={`${s.state} ${["needs_review","interrupted"].includes(run.state)?s.warning:run.state==="failed"?s.failed:""}`}>{run.state.replaceAll("_"," ")}</span></div><p style={{marginTop:12,whiteSpace:"pre-wrap"}}>{run.prompt}</p></div><div className={s.card}><h3>Actual steps</h3><div className={s.timeline}>{run.events.map((event,i)=><div key={`${event.phase}-${i}`} className={s.event}><strong>{event.phase}</strong><div>{event.detail}</div></div>)}</div>{!done(run.state)&&<span className={s.loading}>Task is active in the API process. This timeline refreshes automatically.</span>}</div>{run.result&&<div className={s.card}><h3>Outcome</h3><RichText text={run.result}/><a className={s.download} href={`/api/proxy/work/runs/${run.id}/artifact`} target="_blank" rel="noopener noreferrer">Open result ↗</a></div>}{run.error&&<div className={s.error}>{run.error}</div>}{run.sources.length>0&&<div className={s.card}><h3>Sources</h3>{run.sources.map(x=><a className={s.source} key={x.ref} target="_blank" rel="noopener noreferrer" href={x.url}>[{x.ref}] {x.title}</a>)}<p className={s.hint}>Publication metadata and search snippets are not verified full-page research.</p></div>}</>:<div className={s.notice}>This assignment has no run. If creation was interrupted, start a new assignment after reviewing the error below.</div>}
+              <div className={s.notice}><strong>Work engine status:</strong> bounded tasks are processed by the independent Ubuntu Work worker after browser disconnection, including during API restarts. Worker failure may interrupt an active task; automatic checkpointed resume and autonomous computer tools are not installed.</div>
+              {run?<><div className={s.card}><div className={s.pillRow} style={{justifyContent:"space-between"}}><strong>Supervisor record</strong><span className={`${s.state} ${["needs_review","interrupted"].includes(run.state)?s.warning:run.state==="failed"?s.failed:""}`}>{run.state.replaceAll("_"," ")}</span></div><p style={{marginTop:12,whiteSpace:"pre-wrap"}}>{run.prompt}</p></div><div className={s.card}><h3>Actual steps</h3><div className={s.timeline}>{run.events.map((event,i)=><div key={`${event.phase}-${i}`} className={s.event}><strong>{event.phase}</strong><div>{event.detail}</div></div>)}</div>{!done(run.state)&&<span className={s.loading}>The Ubuntu worker owns this task. The timeline refreshes automatically.</span>}</div>{run.result&&<div className={s.card}><h3>Outcome</h3><RichText text={run.result}/><a className={s.download} href={`/api/proxy/work/runs/${run.id}/artifact`} target="_blank" rel="noopener noreferrer">Open result ↗</a></div>}{run.error&&<div className={s.error}>{run.error}</div>}{run.sources.length>0&&<div className={s.card}><h3>Sources</h3>{run.sources.map(x=><a className={s.source} key={x.ref} target="_blank" rel="noopener noreferrer" href={x.url}>[{x.ref}] {x.title}</a>)}<p className={s.hint}>Publication metadata and search snippets are not verified full-page research.</p></div>}</>:<div className={s.notice}>This assignment has no run. If creation was interrupted, start a new assignment after reviewing the error below.</div>}
               <div className={s.card}><h3>Capabilities & restrictions</h3><div className={s.kv}><span>Public research</span><strong>{overview?.permissions.public_research?"Available":"Unavailable"}</strong></div><div className={s.kv}><span>Approved uploaded files</span><strong>{overview?.permissions.owner_uploaded_files?"Available":"Unavailable"}</strong></div>{blockNames.map(t=><div key={t} className={s.kv}><span>{t}</span><strong>Not enabled</strong></div>)}<p className={s.hint}>These are backend-enforced restrictions, not visual switches.</p></div>
               {error&&<p className={s.error}>{error}</p>}
             </div></div>
@@ -78,7 +93,7 @@ export default function WorkMode(){
         <div className={s.card}><h3>Required access</h3><label className={s.listItem}><input type="radio" name="kind" checked={kind==="supported"} onChange={()=>setKind("supported")}/> Research / writing / owner-attached documents</label><label className={s.listItem}><input type="radio" name="kind" checked={kind==="computer"} onChange={()=>setKind("computer")}/> Browser, terminal or workstation files</label>{kind==="computer"&&<p className={s.safety}>This task requires a future permissioned supervisor service. Starting it is disabled rather than pretending computer access exists.</p>}</div>
         <label className={s.listItem}><input type="checkbox" checked={ack} onChange={e=>setAck(e.target.checked)}/> I authorize the available bounded tools for this task. No host computer permissions are granted.</label>
         <button className={s.primary} disabled={!canStart} onClick={()=>void delegate()}>{busy?"Submitting…":kind==="computer"?"Computer tools not yet available":"Start bounded Work"}</button>
-        <p className={s.hint}>The task runs server-side while the API stays running; automatic recovery after restart and user notifications require the next backend phase.</p>
+        <p className={s.hint}>The independent Ubuntu worker handles bounded tasks. Code-writing and filesystem execution are not yet enabled; automatic recovery after worker interruption is planned.</p>
         {error&&<p className={s.error}>{error}</p>}
       </aside>}
     </section>

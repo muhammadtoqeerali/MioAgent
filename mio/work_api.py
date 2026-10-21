@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -12,7 +11,6 @@ from pydantic import BaseModel, Field
 
 from mio.config import Settings
 from mio.studio_files import StudioError
-from mio.work_agent import execute
 from mio.work_core import (
     RUNTIME,
     SKILLS,
@@ -23,10 +21,10 @@ from mio.work_core import (
     interrupt_orphaned,
     link_file,
     project_info,
-    projects,
     remove_memory,
     run_info,
 )
+from mio.work_lifecycle import is_archived, listed_projects, register_work_lifecycle
 
 
 class ProjectNew(BaseModel):
@@ -51,15 +49,17 @@ def register_work_routes(app: FastAPI, settings: Settings, require_token: Callab
                          root: Path = RUNTIME / "work") -> None:
     """Never expose an endpoint to grant filesystem, network or shell permissions."""
     auth = [Depends(require_token)]
+    register_work_lifecycle(app, require_token, root)
     # Only the managed native runtime owns the persistent production queue.
     # Unit-test app factories must not interrupt the operator's real Work tasks.
-    native = str(RUNTIME) in getattr(settings, "mio_database_url", "")
-    if root != RUNTIME / "work" or native:
+    # Test stores retain their old interruption semantics. In production a
+    # separate worker, not FastAPI, owns task lifecycle and restart recovery.
+    if root != RUNTIME / "work":
         interrupt_orphaned(root)
 
     @app.get("/api/work/overview", dependencies=auth)
-    def overview():
-        return {"release": "v0.4K", "projects": projects(root), "skills": SKILLS,
+    def overview(archived: bool = False):
+        return {"release": "v0.4K", "projects": listed_projects(root, archived=archived), "skills": SKILLS,
                 "permissions": {"host_shell": False, "host_file_scan": False,
                                 "arbitrary_browser": False, "public_research": True,
                                 "owner_uploaded_files": True},
@@ -104,13 +104,12 @@ def register_work_routes(app: FastAPI, settings: Settings, require_token: Callab
     @app.post("/api/work/projects/{project_id}/runs", dependencies=auth, status_code=202)
     async def start_run(project_id: str, payload: TaskNew):
         try:
+            if is_archived(root, project_id):
+                raise WorkStop("Restore this archived project before starting a run")
             run = create_run(root, project_id, payload.prompt)
         except WorkStop as exc:
             raise HTTPException(409, detail=str(exc)) from exc
-        task = asyncio.create_task(execute(root, run["id"], settings))
-        app.state.work_tasks = getattr(app.state, "work_tasks", set())
-        app.state.work_tasks.add(task)
-        task.add_done_callback(app.state.work_tasks.discard)
+        # Persistent worker owns the queue; browser/API process is not a task host.
         return run
 
     @app.get("/api/work/runs/{run_id}", dependencies=auth)

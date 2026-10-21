@@ -130,13 +130,16 @@ def inspect_bytes(data: bytes, filename: str) -> tuple[str, str]:
             raise StudioError("Invalid PDF header")
         try:
             from pypdf import PdfReader
-        except ImportError:
-            return "document", "PDF stored. Install optional pypdf to extract document text."
+        except ImportError as exc:
+            raise StudioError("PDF text extraction requires pypdf in the MioAgent venv") from exc
         try:
             doc = PdfReader(io.BytesIO(data), strict=False)
             if doc.is_encrypted:
                 raise StudioError("Password-protected PDF requires a decrypted copy")
-            return "document", "\n".join((p.extract_text() or "") for p in doc.pages[:30])[:MAX_TEXT]
+            extracted = "\n".join((p.extract_text() or "") for p in doc.pages[:30])[:MAX_TEXT]
+            if not extracted.strip():
+                raise StudioError("PDF has no selectable text; scanned PDF OCR is not enabled")
+            return "document", extracted
         except Exception as exc:
             if isinstance(exc, StudioError):
                 raise
@@ -207,4 +210,10 @@ def read_attachment(root: Path, file_id: str) -> tuple[dict, bytes]:
     meta, raw = json.loads(records[0]), records[1]
     if meta["id"] != file_id or len(raw) != meta["bytes"] or hashlib.sha256(raw).hexdigest() != meta["sha256"]:
         raise StudioError("Attachment integrity verification failed")
+    # Older PDFs were saved with a placeholder if pypdf was absent. Reinspect
+    # the checksum-verified bytes without changing the private original.
+    if (meta["name"].lower().endswith(".pdf") and
+            meta.get("extract", "").startswith("PDF stored. Install optional pypdf")):
+        kind, extracted = inspect_bytes(raw, meta["name"])
+        meta = {**meta, "kind": kind, "extract": extracted}
     return meta, raw

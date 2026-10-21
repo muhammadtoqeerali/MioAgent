@@ -13,6 +13,7 @@ type Image = {id:string;prompt:string;state:string;error?:string};
 
 export default function Chat() {
   const [history,setHistory] = useState<Conversation[]>([]);
+  const [showArchived,setShowArchived] = useState(false);
   const [selected,setSelected] = useState<string|null>(null);
   const [messages,setMessages] = useState<Message[]>([]);
   const [prompt,setPrompt] = useState("");
@@ -23,22 +24,30 @@ export default function Chat() {
   const [error,setError] = useState("");
   const [imageMode,setImageMode] = useState(false);
   const [image,setImage] = useState<Image|null>(null);
-  const bottom = useRef<HTMLDivElement>(null);
+  const thread = useRef<HTMLElement>(null);
+  const followLatest = useRef(true);
+  const trackScroll = () => {
+    const node = thread.current;
+    if (node) followLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
+  };
 
   const reload = useCallback(async ()=>{
     const [list,status] = await Promise.all([
-      mioApi<{conversations:Conversation[]}>("assistant/conversations"),
+      mioApi<{conversations:Conversation[]}>(`assistant/conversations?archived=${showArchived}`),
       mioApi<Model>("assistant/status"),
     ]);
     setHistory(list.conversations);setModel(status);
-  },[]);
+  },[showArchived]);
   const load = useCallback(async (id:string)=>{
     const data=await mioApi<{messages:Message[]}>(`assistant/conversations/${id}`);
     setMessages(data.messages);
   },[]);
   useEffect(()=>{void reload().catch((e:Error)=>setError(e.message));},[reload]);
   useEffect(()=>{if(selected) void load(selected).catch((e:Error)=>setError(e.message));},[selected,load]);
-  useEffect(()=>{bottom.current?.scrollIntoView({behavior:"smooth",block:"end"});},[messages,current,image]);
+  useEffect(()=>{
+    const node=thread.current;
+    if(node && followLatest.current) node.scrollTop=node.scrollHeight;
+  },[messages,current,image]);
   useEffect(()=>{
     if(!pending) return;
     let alive=true;
@@ -74,11 +83,14 @@ export default function Chat() {
     const content=prompt.trim();if(!content || sending || content.length<3)return;
     setError("");setSending(true);
     try{
-      if(imageMode){
+      // Chat automatically recognizes image intent; image-only mode stays optional.
+      const destination = imageMode ? "image" :
+        (await mioApi<{mode:string}>("studio/intent", postJson({prompt:content}))).mode;
+      if(destination === "image"){
         const result=await fetch("/api/studio", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:content,mode:"image",attachments:[]})});
         const data=await result.json();
         if(!result.ok || typeof data.image_job!=="string")throw new Error(data.detail??"Image request failed");
-        setImage({id:data.image_job,prompt:content,state:"queued"});setPrompt("");setImageMode(false);
+        setImage({id:data.image_job,prompt:content,state:"queued"});setPrompt("");
         return;
       }
       const response=await mioApi<{conversation_id:string;task_id:string}>("assistant/ask",postJson({prompt:content,conversation_id:selected}));
@@ -86,14 +98,27 @@ export default function Chat() {
       await load(response.conversation_id);await reload();
     }catch(e){setError(e instanceof Error?e.message:"Unable to send");setSending(false);}
   }
-  const start=()=>{if(sending)return;setSelected(null);setMessages([]);setCurrent(null);setPending(null);setImage(null);setPrompt("");setError("");};
+  async function chatAction(action:"archive"|"restore"|"delete"){
+    if(!selected||sending)return;
+    if(action==="delete" && !window.confirm("Permanently delete this chat, its messages and linked chat tasks from MioAgent's backend? This cannot be undone."))return;
+    try{
+      await mioApi(`assistant/conversations/${selected}${action==="delete"?"":`/${action}`}`, {method:action==="delete"?"DELETE":"POST"});
+      setSelected(null);setMessages([]);setCurrent(null);setError("");await reload();
+    }catch(e){setError(e instanceof Error?e.message:"Could not update chat");}
+  }
+  const start=()=>{if(sending)return;followLatest.current=true;setSelected(null);setMessages([]);setCurrent(null);setPending(null);setImage(null);setPrompt("");setError("");};
   return <UIShell section="chat" title="Chat" subtitle="Everyday conversation · Your local model" sidebarContent={<>
     <button className={s.secondary} onClick={start}>＋ New chat</button>
-    <div className={s.sideCaption}>RECENT CHATS</div>
-    {history.map(c=><button key={c.id} className={`${s.questionBtn} ${selected===c.id?s.questionActive:""}`} onClick={()=>{if(sending)return;setSelected(c.id);setCurrent(null);setImage(null);}} title={c.title}>{c.title}</button>)}
+    <button className={s.iconButton} onClick={()=>{setSelected(null);setMessages([]);setShowArchived(v=>!v);}}>{showArchived?"← Active chats":"Archived chats"}</button>
+    {selected&&<div className={s.pillRow}>
+      <button className={s.iconButton} disabled={sending} onClick={()=>void chatAction(showArchived?"restore":"archive")}>{showArchived?"Restore":"Archive"}</button>
+      <button className={s.iconButton} disabled={sending} onClick={()=>void chatAction("delete")}>Delete permanently</button>
+    </div>}
+    <div className={s.sideCaption}>{showArchived?"ARCHIVED CHATS":"RECENT CHATS"}</div>
+    {history.map(c=><button key={c.id} className={`${s.questionBtn} ${selected===c.id?s.questionActive:""}`} onClick={()=>{if(sending)return;followLatest.current=true;setSelected(c.id);setCurrent(null);setImage(null);}} title={c.title}>{c.title}</button>)}
     {!history.length && <p className={s.hint}>New conversations appear here automatically.</p>}
   </>}>
-    <section className={s.stage} aria-label="Chat conversation">
+    <section className={s.stage} ref={thread} onScroll={trackScroll} aria-label="Chat conversation">
       <div className={s.narrow}>
         {!messages.length && !image && <div className={s.centered}><span className={s.welcomeIcon}>✳</span><h2>How can MioAgent help?</h2><p>Ask a question, write together, or explore an idea. Create a Project when you want persistent instructions and shared files.</p><div className={s.promptButtons}><button onClick={()=>setPrompt("Help me outline a research paper on humanoid robotics.")}>Plan an idea</button><button onClick={()=>setPrompt("Explain transformer models in simple terms.")}>Learn a topic</button><button onClick={()=>setImageMode(true)}>Create an image</button></div></div>}
         {messages.map(m=><div key={m.id} className={s.bubbleRow}>{m.role==="user"?<div className={s.userBubble}>{m.content}</div>:<article className={s.assistantBubble}><span className={s.role}>✳ MioAgent</span><RichText text={m.content}/></article>}</div>)}
@@ -101,7 +126,7 @@ export default function Chat() {
         {current && ["failed","canceled"].includes(current.status) && <div className={s.error}>{current.error || "Local task did not complete"}</div>}
         {image && <article className={s.assistantBubble}><span className={s.role}>✳ Image creation</span><p>{image.prompt}</p>{image.state==="ready"?<a href={`/api/studio-image/${image.id}`} target="_blank" rel="noopener noreferrer"><img className={s.image} src={`/api/studio-image/${image.id}`} alt={image.prompt}/><span className={s.textLink}>Open full PNG ↗</span></a>:<div className={s.notice}>{image.state==="failed"?image.error:"Rendering on local ComfyUI…"}</div>}<p className={s.hint}>Generated images remain in the private Studio store; chat-history linking is a future update.</p></article>}
         {error && <p className={s.error} role="alert">{error}</p>}
-        <div ref={bottom}/>
+
       </div>
     </section>
     <div className={s.composerArea}><div className={s.composer}>

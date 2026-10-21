@@ -31,7 +31,9 @@ def test_work_has_enforced_ability_boundary_and_real_run_events():
     code = load("work-mode/page.tsx")
     for required in ('kind==="supported"', 'kind==="computer"', 'setAck', 'work/projects', 'work/runs/', 'run.events'):
         assert required in code
-    assert 'server restarts' in code or 'API process restarts' in code
+    assert 'independent Ubuntu Work worker' in code
+    assert 'during API restarts' in code
+    assert 'Task is active in the API process' not in code
     assert 'unrestricted terminal' not in code.lower()
 
 def test_control_room_uses_recorded_events_and_links_back():
