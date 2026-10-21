@@ -105,10 +105,31 @@ def _validate(data: dict) -> dict:
     if set(ids) != expected or len(ids) != len(expected):
         raise RuntimeError("Autonomy task identities differ from approved roadmap")
     for task in tasks:
-        if task.get("state") not in {"planned", "awaiting_review"} or task.get("verified_by_owner") is not False:
-            raise RuntimeError("Unexpected autonomous task approval state")
+        state = task.get("state")
+        if state not in {"planned", "awaiting_review", "verified"}:
+            raise RuntimeError("Unexpected autonomy task state")
+        verification = task.get("verification")
+        if state == "verified":
+            if task.get("verified_by_owner") is not True or not isinstance(verification, dict):
+                raise RuntimeError("Verified task lacks owner evidence")
+            if set(verification) != {"summary", "artifact_sha256", "approved_at", "method"}:
+                raise RuntimeError("Unexpected owner verification fields")
+            if (not isinstance(verification["summary"], str)
+                    or not 8 <= len(verification["summary"]) <= 600
+                    or not isinstance(verification["artifact_sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", verification["artifact_sha256"])
+                    or not isinstance(verification["approved_at"], int)
+                    or verification["approved_at"] < data["created"]
+                    or verification["method"] != "explicit_owner_cli_v1"):
+                raise RuntimeError("Invalid owner verification")
+        elif task.get("verified_by_owner") is not False or verification is not None:
+            raise RuntimeError("Unverified task contains an approval")
         if not isinstance(task.get("depends_on"), list) or task["depends_on"] != list(next(r[2] for r in PHASES if r[0] == task["id"])):
             raise RuntimeError("Autonomy dependencies were modified")
+    completed = {t["id"] for t in tasks if t["state"] == "verified"}
+    for task in tasks:
+        if task["state"] == "verified" and not set(task["depends_on"]).issubset(completed):
+            raise RuntimeError("Owner-verification dependency was not satisfied")
     return data
 
 
@@ -195,5 +216,66 @@ def save_proposal(store: Path, task_id: str, steps: list[str], model: str) -> di
                             "sha256": hashlib.sha256(serialized.encode()).hexdigest(),
                             "created": int(time.time()), "status": "untrusted_model_proposal"}
         item["state"] = "awaiting_review"
+        _atomic(store, data)
+        return item
+
+
+def verify_task(store: Path, task_id: str, artifact_sha256: str, summary: str, *,
+                owner_confirmed: bool = False) -> dict:
+    """Explicit workstation-owner approval; NOT proof of automated acceptance.
+
+    The owner must inspect the required acceptance criteria and submit evidence.
+    We verify the evaluator report bytes for model-eval; other tasks remain owner
+    attestations until independent acceptance adapters are implemented.
+    """
+    if not owner_confirmed:
+        raise ValueError("Explicit owner confirmation is required")
+    if not isinstance(task_id, str) or not ID.fullmatch(task_id):
+        raise ValueError("Invalid task identifier")
+    if not isinstance(artifact_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", artifact_sha256):
+        raise ValueError("Provide a SHA256 fingerprint of the reviewed evidence")
+    if not isinstance(summary, str) or not 8 <= len(summary.strip()) <= 600:
+        raise ValueError("Provide a bounded owner review summary")
+    if task_id == "model-eval":
+        path = store / "reports" / (artifact_sha256 + ".json")
+        _check_file(path)
+        contents = path.read_bytes()
+        if hashlib.sha256(contents).hexdigest() != artifact_sha256:
+            raise RuntimeError("Model evaluation evidence checksum mismatch")
+        report = json.loads(contents)
+        results = report.get("results") if isinstance(report, dict) else None
+        models = report.get("models") if isinstance(report, dict) else None
+        if (not isinstance(report, dict) or report.get("schema") != 1
+                or report.get("cloud_calls") is not False
+                or report.get("model_downloads") is not False
+                or report.get("role_policy_modified") is not False
+                or not isinstance(models, list) or len(models) != 3
+                or not all(isinstance(m, dict) and isinstance(m.get("name"), str)
+                           and isinstance(m.get("digest"), str)
+                           and re.fullmatch(r"[0-9a-f]{12,64}", m["digest"]) for m in models)
+                or len({m["name"] for m in models}) != 3
+                or not isinstance(results, list) or len(results) != 12
+                or not all(isinstance(x, dict) and isinstance(x.get("passed"), bool)
+                           for x in results)):
+            raise RuntimeError("Evidence does not contain a valid local model evaluation")
+        expected = {(m["name"], role) for m in models
+                    for role in ("planning", "coding", "writing", "research")}
+        if {(x.get("model"), x.get("role")) for x in results} != expected:
+            raise RuntimeError("Model evaluation role coverage is incomplete")
+    with _locked(store):
+        data = _read(store)
+        item = next((t for t in data["tasks"] if t["id"] == task_id), None)
+        if item is None or item["state"] == "verified":
+            raise RuntimeError("Unknown or already verified milestone")
+        completed = {t["id"] for t in data["tasks"] if t["verified_by_owner"]}
+        if not set(item["depends_on"]).issubset(completed):
+            raise RuntimeError("Cannot approve a milestone before its dependencies")
+        item["state"] = "verified"
+        item["verified_by_owner"] = True
+        item["verification"] = {"summary": summary.strip(),
+                                "artifact_sha256": artifact_sha256,
+                                "approved_at": int(time.time()),
+                                "method": "explicit_owner_cli_v1"}
+        _validate(data)
         _atomic(store, data)
         return item
