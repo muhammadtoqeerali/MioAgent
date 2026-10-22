@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
+from mio.autonomy_review_api import register_autonomy_review_routes
 from mio.chat_lifecycle import (
     is_archived,
     list_chat_query,
@@ -533,4 +534,5 @@ def create_app(config: Settings | None = None) -> FastAPI:
     register_intelligence_routes(app, require_token)
     register_studio_routes(app, settings, require_token)
     register_work_routes(app, settings, require_token)
+    register_autonomy_review_routes(app, require_token)
     return app

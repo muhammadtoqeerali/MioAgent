@@ -144,7 +144,7 @@ export default function WorkPage() {
     <aside className={styles.sidebar}>
       <div className={styles.brand}>✦ MioAgent <small>WORKSPACE v0.4K</small></div>
       <nav className={styles.navigation}>
-        <a href="/studio">← Studio chat &amp; images</a><a href="/intelligence">Engineering console</a><a href="/">System overview</a>
+        <a href="/studio">← Studio chat &amp; images</a><a href="/intelligence">Engineering console</a><a href="/work/reviews">Engineering reviews</a><a href="/">System overview</a>
       </nav>
       <div className={styles.row}><b>Projects</b><button onClick={() => setShowNew(!showNew)} aria-label="New project">＋</button></div>
       {overview?.projects.map((p) => <button key={p.id} onClick={() => { setSelected(p.id); setRunId(null); }}
