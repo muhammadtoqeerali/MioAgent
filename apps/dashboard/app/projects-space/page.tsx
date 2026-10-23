@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import UIShell from "../_mio/ui-shell";
+import ScorpioThreads, { inspectThread, listThreads, threadPrompt } from "../_mio/scorpio8a-threads";
 import RichText from "../_mio/rich-text";
 import { done, isDelegation, mioApi, postJson, type WorkProject, type WorkProjectDetail, type WorkRun } from "../_mio/api";
 import s from "../_mio/experience.module.css";
@@ -25,6 +26,7 @@ export default function ProjectsSpace(){
   const [memory,setMemory]=useState("");const [busy,setBusy]=useState(false);const [error,setError]=useState("");
   const upload=useRef<HTMLInputElement>(null);
   const [imageReference,setImageReference]=useState<string|null>(null);const [imageRevision,setImageRevision]=useState(0);
+  const [threadId,setThreadId]=useState("main");const [threadTitle,setThreadTitle]=useState("New chat");
   const thread=useRef<HTMLDivElement>(null);
   const followLatest=useRef(true);
   const trackScroll=()=>{
@@ -34,14 +36,15 @@ export default function ProjectsSpace(){
   const refresh=useCallback(async()=>{
     const next=await mioApi<{projects:WorkProject[]}>(`work/overview?archived=${showArchived}`);
     const visible=next.projects.filter(p=>!isDelegation(p.title));
-    setProjects(visible);setId(old=>visible.some(p=>p.id===old)?old:visible[0]?.id??null);
+    setProjects(visible);const requested=new URLSearchParams(window.location.search).get("project");
+    setId(old=>visible.some(p=>p.id===old)?old:requested&&visible.some(p=>p.id===requested)?requested:visible[0]?.id??null);
   },[showArchived]);
   const load=useCallback(async(project:string)=>{
     const info=await mioApi<WorkProjectDetail>(`work/projects/${project}`);
     setDetail(info);
   },[]);
   useEffect(()=>{void refresh().catch((e:Error)=>setError(e.message));},[refresh]);
-  useEffect(()=>{if(!id){setDetail(null);setRuns({});return;}setRuns({});setDetail(null);void load(id).catch((e:Error)=>setError(e.message));},[id,load]);
+  useEffect(()=>{if(!id){setDetail(null);setRuns({});return;}setThreadId("main");setRuns({});setDetail(null);void load(id).catch((e:Error)=>setError(e.message));},[id,load]);
   useEffect(()=>{
     if(!id||!detail||detail.id!==id)return;
     let active=true;
@@ -74,7 +77,9 @@ export default function ProjectsSpace(){
       const directive=await imageIntent(prompt.trim(),"project",id,imageReference);
       if(directive.image){await sendImage(prompt.trim(),"project",id,imageReference,imageReference?"edit":"auto");
         setImageReference(null);setImageRevision(n=>n+1);setPrompt("");}
-      else {await mioApi(`work/projects/${id}/runs`,postJson({prompt:prompt.trim()}));setPrompt("");await load(id);}
+      else {const context=(detail?.runs??[]).filter(r=>inspectThread(r.prompt).id===threadId).slice(0,3).reverse().map(r=>({prompt:r.prompt,result:runs[r.id]?.result}));
+        const body=threadPrompt(threadId,threadTitle,prompt.trim(),context);
+        await mioApi(`work/projects/${id}/runs`,postJson({prompt:body}));setPrompt("");await load(id);}
     }
     catch(e){setError(e instanceof Error?e.message:"Cannot send project task");}finally{setBusy(false);}
   }
@@ -113,34 +118,37 @@ export default function ProjectsSpace(){
       if(result.uploads_cleanup_incomplete?.length)setError("Some uploaded files could not be removed; inspect server logs and storage.");
     }catch(e){setError(e instanceof Error?e.message:"Could not update project");}finally{setBusy(false);}
   }
-  const items=detail?.runs.slice(0,16).reverse()??[];
+  const items=detail?.runs.filter(r=>inspectThread(r.prompt).id===threadId).slice(0,16).reverse()??[];
   return <UIShell section="projects" title="Projects" subtitle="Ongoing conversations with shared instructions and files">
     <div className={s.stage}>
       <div className={s.split}>
         <aside className={s.panel} aria-label="Project list"><div className={s.panelTop}><span className={s.panelTitle}>YOUR PROJECTS</span><button className={s.iconButton} aria-label="Create project" onClick={()=>setCreate(true)}>＋ New</button></div>
           <button className={s.iconButton} onClick={()=>{setId(null);setShowArchived(v=>!v);}}>{showArchived?"← Active projects":"Archived projects"}</button>
-          {projects.map(p=><button key={p.id} className={`${s.listButton} ${p.id===id?s.selected:""}`} onClick={()=>{followLatest.current=true;setId(p.id);setKnowledge(false);}}>{p.title}</button>)}
+          {projects.map(p=><button key={p.id} className={`${s.listButton} ${p.id===id?s.selected:""}`} onClick={()=>{followLatest.current=true;setThreadId("main");setId(p.id);setKnowledge(false);}}>{p.title}</button>)}
           {!projects.length && <p className={s.hint}>Create your first project to save its files and responses.</p>}
         </aside>
         <div className={s.body}>
-          {!id?<div className={s.centered}><span className={s.welcomeIcon}>▦</span><h2>Keep your ideas together.</h2><p>Give MioAgent context once: instructions, files and saved memories stay attached to your project.</p><button className={s.primary} onClick={()=>setCreate(true)}>Create project</button></div>:<>
+          {!id?<div className={s.centered}><span className={s.welcomeIcon}>▦</span><h2>Keep your ideas together.</h2><p>Give Scorpio context once: instructions, files and saved memories stay attached to your project.</p><button className={s.primary} onClick={()=>setCreate(true)}>Create project</button></div>:<>
             <div className={s.heading}><div className={s.pillRow} style={{justifyContent:"space-between"}}><div><h2>{detail?.title||"Opening project…"}</h2><p>{detail?.instructions?detail.instructions.slice(0,130):"A private space for your ongoing research and files"}</p></div><div className={s.pillRow}>
                 <button className={s.secondary} onClick={()=>setKnowledge(true)}>▤ Files & instructions</button>
                 <button className={s.iconButton} disabled={busy} onClick={()=>void projectAction(showArchived?"restore":"archive")}>{showArchived?"Restore":"Archive"}</button>
                 <button className={s.iconButton} disabled={busy} onClick={()=>void projectAction("delete")}>Delete</button>
               </div></div></div>
+            <ScorpioThreads runs={detail?.runs??[]} selected={threadId} pendingTitle={threadTitle}
+              onChoose={choice=>{setThreadId(choice);setThreadTitle(listThreads(detail?.runs??[]).find(t=>t.id===choice)?.title??"New chat");followLatest.current=true;}}
+              onNew={()=>{const name=window.prompt("Name this new project chat (saved with its first message):","New chat");if(name===null)return;setThreadId(crypto.randomUUID().replaceAll("-",""));setThreadTitle(name.trim().slice(0,70)||"New chat");setPrompt("");followLatest.current=true;}}/>
             <div className={s.scroll} ref={thread} onScroll={trackScroll}><div className={s.narrow}>
               {!items.length && <div className={s.centered}><span className={s.welcomeIcon}>✳</span><h2>Start a project discussion</h2><p>Ask questions using this project's instructions and linked documents.</p></div>}
-              {items.map(item=>{const run=runs[item.id];return <div key={item.id} className={s.bubbleRow}><div className={s.userBubble}>{item.prompt}</div><div className={s.assistantBubble}><span className={s.role}>✳ MioAgent <span className={`${s.state} ${item.state==="needs_review"?s.warning:item.state==="failed"?s.failed:""}`}>{item.state.replaceAll("_"," ")}</span></span>{run?.result?<RichText text={run.result}/>:<div className={s.loading}>{done(item.state)?run?.error??"Could not load result":"Running on Ubuntu server…"}</div>}{run?.sources&&run.sources.length>0&&<div>{run.sources.map(src=><a className={s.source} key={src.ref} href={src.url} target="_blank" rel="noopener noreferrer">[{src.ref}] {src.title}</a>)}</div>}{run?.result&&<div className={s.answerNote}><span>{run.model||"Local model"}</span><a className={s.textLink} href={`/api/proxy/work/runs/${item.id}/artifact`} target="_blank" rel="noopener noreferrer">Open Markdown ↗</a></div>}</div></div>;})}
+              {items.map(item=>{const run=runs[item.id];return <div key={item.id} className={s.bubbleRow}><div className={s.userBubble}>{inspectThread(item.prompt).message}</div><div className={s.assistantBubble}><span className={s.role}>✳ Scorpio <span className={`${s.state} ${item.state==="needs_review"?s.warning:item.state==="failed"?s.failed:""}`}>{item.state.replaceAll("_"," ")}</span></span>{run?.result?<RichText text={run.result}/>:<div className={s.loading}>{done(item.state)?run?.error??"Could not load result":"Running on Ubuntu server…"}</div>}{run?.sources&&run.sources.length>0&&<div>{run.sources.map(src=><a className={s.source} key={src.ref} href={src.url} target="_blank" rel="noopener noreferrer">[{src.ref}] {src.title}</a>)}</div>}{run?.result&&<div className={s.answerNote}><span>{run.model||"Local model"}</span><a className={s.textLink} href={`/api/proxy/work/runs/${item.id}/artifact`} target="_blank" rel="noopener noreferrer">Open Markdown ↗</a></div>}</div></div>;})}
               <OmniImageThread scope="project" scopeId={id} revision={imageRevision} onEdit={()=>setPrompt("Change this image: ")}/>
               {error&&<p className={s.error} role="alert">{error}</p>}
             </div></div>
-            <div className={s.composerArea}><div className={s.composer}><textarea aria-label="Message project" value={prompt} onChange={e=>setPrompt(e.target.value)} rows={2} maxLength={6000} disabled={busy} placeholder="Message this project…" onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();void send();}}}/><div className={s.composeBottom}><div className={s.pillRow}><input hidden type="file" multiple ref={upload} onChange={e=>void attach(e.target.files)}/><button className={s.iconButton} aria-label="Attach project files" disabled={busy} onClick={()=>upload.current?.click()}>＋ Attach files</button><span className={s.hint}>Saved with project</span></div><button className={s.send} disabled={busy||prompt.trim().length<4} onClick={()=>void send()}>Send ↑</button></div></div><p className={s.note}>Project instructions, approved memories and files are used. Automatic cross-turn chat reasoning is not yet implemented.</p></div>
+            <div className={s.composerArea}><div className={s.composer}><textarea aria-label="Message project" value={prompt} onChange={e=>setPrompt(e.target.value)} rows={2} maxLength={6000} disabled={busy} placeholder="Message this project…" onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();void send();}}}/><div className={s.composeBottom}><div className={s.pillRow}><input hidden type="file" multiple ref={upload} onChange={e=>void attach(e.target.files)}/><button className={s.iconButton} aria-label="Attach project files" disabled={busy} onClick={()=>upload.current?.click()}>＋ Attach files</button><span className={s.hint}>Saved with project</span></div><button className={s.send} disabled={busy||prompt.trim().length<4} onClick={()=>void send()}>Send ↑</button></div></div><p className={s.note}>Project instructions, approved memories and files are used. Project discussion uses up to three prior turns for context. Discussions share project memory/files; independent server-side thread isolation is not yet implemented.</p></div>
           </>}
         </div>
       </div>
       {knowledge&&id&&<aside className={s.pane} aria-label="Project knowledge"><div className={s.paneHeader}><h3>Project knowledge</h3><button className={s.iconButton} onClick={()=>setKnowledge(false)} aria-label="Close project knowledge">✕</button></div><strong>Instructions</strong><div className={s.notice}><div className={s.instructions}>{detail?.instructions||"No project instructions saved yet."}</div><p className={s.hint}>Editable instructions and revision history are planned; existing instructions are read-only.</p></div><hr className={s.sep}/><div className={s.paneHeader}><strong>Files</strong><button className={s.secondary} onClick={()=>upload.current?.click()} disabled={busy}>＋ Add</button></div>{detail?.assets.map(a=><div className={s.listItem} key={a.id}><strong>{a.name}</strong>{a.kind}</div>)}{!detail?.assets.length&&<p className={s.hint}>No files linked yet.</p>}<hr className={s.sep}/><strong>Approved memory</strong><p className={s.hint}>Only memories you explicitly save are retained.</p><label className={s.field}>Add a memory<textarea value={memory} onChange={e=>setMemory(e.target.value)} maxLength={1500} placeholder="A decision or fact to remember" /></label><button className={s.secondary} disabled={busy||memory.trim().length<3} onClick={()=>void remember()}>Save memory</button>{detail?.memories.map(m=><div className={s.listItem} key={m.id}><p>{m.content}</p><button className={s.iconButton} onClick={()=>void removeMemory(m.id)}>Remove</button></div>)}</aside>}
-      {create&&<div className={s.pane} role="dialog" aria-label="Create project"><div className={s.paneHeader}><h3>New project</h3><button className={s.iconButton} onClick={()=>setCreate(false)}>✕</button></div><p className={s.notice}>Projects hold instructions, files, saved memories and their own response history. Delegated computer work belongs in Work.</p><label className={s.field}>Name<input autoFocus value={name} onChange={e=>setName(e.target.value)} maxLength={120} placeholder="e.g. Robotics literature review" /></label><label className={s.field}>Instructions<textarea value={instructions} onChange={e=>setInstructions(e.target.value)} maxLength={6000} placeholder="What MioAgent should remember about this project" /></label><button className={s.primary} disabled={busy||name.trim().length<3} onClick={()=>void newProject()}>Create project</button>{error&&<p className={s.error}>{error}</p>}</div>}
+      {create&&<div className={s.pane} role="dialog" aria-label="Create project"><div className={s.paneHeader}><h3>New project</h3><button className={s.iconButton} onClick={()=>setCreate(false)}>✕</button></div><p className={s.notice}>Projects hold instructions, files, saved memories and their own response history. Delegated computer work belongs in Work.</p><label className={s.field}>Name<input autoFocus value={name} onChange={e=>setName(e.target.value)} maxLength={120} placeholder="e.g. Robotics literature review" /></label><label className={s.field}>Instructions<textarea value={instructions} onChange={e=>setInstructions(e.target.value)} maxLength={6000} placeholder="What Scorpio should remember about this project" /></label><button className={s.primary} disabled={busy||name.trim().length<3} onClick={()=>void newProject()}>Create project</button>{error&&<p className={s.error}>{error}</p>}</div>}
     </div>
   </UIShell>;
 }

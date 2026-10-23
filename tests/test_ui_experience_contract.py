@@ -12,7 +12,7 @@ def test_simplified_navigation_and_default_route():
     shell = load("_mio/ui-shell.tsx")
     assert all(p in shell for p in ('/chat', '/projects-space', '/work-mode', '/control-room'))
     assert all(f'href="{old}"' not in shell for old in ('/studio','/assistant','/work','/intelligence','/projects'))
-    assert 'redirect("/chat")' in load("page.tsx")
+    assert 'redirect("/control-room")' in load("page.tsx")
     assert 'redirect("/chat")' in load("workspace/page.tsx")
 
 def test_chat_uses_persistent_conversations_and_real_image_api():
@@ -25,7 +25,7 @@ def test_projects_use_real_file_memory_and_run_endpoints():
     code = load("projects-space/page.tsx")
     for required in ('work/projects', 'studio/attachments', '/files', '/memory', '/runs', 'approved:true'):
         assert required in code
-    assert 'Automatic cross-turn chat reasoning is not yet implemented' in code
+    assert 'independent server-side thread isolation is not yet implemented' in code
 
 def test_work_has_enforced_ability_boundary_and_real_run_events():
     code = load("work-mode/page.tsx")

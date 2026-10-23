@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./_mio/scorpio8a.css";
+import ScorpioShell from "./_mio/scorpio8a-shell";
+
 export const metadata: Metadata = {
-  title: "Scorpio | AI Control Room",
-  description: "Scorpio local-first AI control room and owner-reviewed Work dashboard",
+  title: "Scorpio | AI Agent Control Room",
+  description: "Scorpio local-first AI workspace, Chat, Projects, Work and owner-controlled approvals",
 };
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body>{children}</body></html>;
+  return <html lang="en"><body><ScorpioShell>{children}</ScorpioShell></body></html>;
 }

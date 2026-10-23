@@ -160,7 +160,7 @@ export default function Chat() {
   }
   async function chatAction(action:"archive"|"restore"|"delete"){
     if(!selected||sending)return;
-    if(action==="delete" && !window.confirm("Permanently delete this chat, its messages and linked chat tasks from MioAgent's backend? This cannot be undone."))return;
+    if(action==="delete" && !window.confirm("Permanently delete this chat, its messages and linked chat tasks from Scorpio's backend? This cannot be undone."))return;
     try{
       await mioApi(`assistant/conversations/${selected}${action==="delete"?"":`/${action}`}`, {method:action==="delete"?"DELETE":"POST"});
       setSelected(null);setMessages([]);setCurrent(null);setError("");await reload();
@@ -180,15 +180,15 @@ export default function Chat() {
   </>}>
     <section className={s.stage} ref={thread} onScroll={trackScroll} aria-label="Chat conversation">
       <div className={s.narrow}>
-        {!messages.length && !image && <div className={s.centered}><span className={s.welcomeIcon}>✳</span><h2>How can MioAgent help?</h2><p>Ask a question, write together, or explore an idea. Create a Project when you want persistent instructions and shared files.</p><div className={s.promptButtons}><button onClick={()=>setPrompt("Help me outline a research paper on humanoid robotics.")}>Plan an idea</button><button onClick={()=>setPrompt("Explain transformer models in simple terms.")}>Learn a topic</button><button onClick={()=>setImageMode(true)}>Create an image</button></div></div>}
-        {messages.map(m=><div key={m.id} className={s.bubbleRow}>{m.role==="user"?<div className={s.userBubble}>{m.content}</div>:<article className={s.assistantBubble}><span className={s.role}>✳ MioAgent</span><>{m.content.startsWith("MIO_IMAGE_TURN:") ? <OmniImageView id={m.content.slice("MIO_IMAGE_TURN:".length)} onEdit={()=>setPrompt("Change this image: ")}/> : <RichText text={m.content}/>}</></article>}</div>)}
+        {!messages.length && !image && <div className={s.centered}><span className={s.welcomeIcon}>✳</span><h2>How can Scorpio help?</h2><p>Ask a question, write together, or explore an idea. Create a Project when you want persistent instructions and shared files.</p><div className={s.promptButtons}><button onClick={()=>setPrompt("Help me outline a research paper on humanoid robotics.")}>Plan an idea</button><button onClick={()=>setPrompt("Explain transformer models in simple terms.")}>Learn a topic</button><button onClick={()=>setImageMode(true)}>Create an image</button></div></div>}
+        {messages.map(m=><div key={m.id} className={s.bubbleRow}>{m.role==="user"?<div className={s.userBubble}>{m.content}</div>:<article className={s.assistantBubble}><span className={s.role}>✳ Scorpio</span><>{m.content.startsWith("MIO_IMAGE_TURN:") ? <OmniImageView id={m.content.slice("MIO_IMAGE_TURN:".length)} onEdit={()=>setPrompt("Change this image: ")}/> : <RichText text={m.content}/>}</></article>}</div>)}
         {fileTurns.map((turn,i)=><div key={`file-turn-${i}`} className={s.bubbleRow}>
           <div className={s.userBubble}>{turn.prompt}<small className={s.attachmentCaption}>Attached: {turn.files.join(", ")}</small></div>
-          <article className={s.assistantBubble}><span className={s.role}>✳ MioAgent · {turn.model}</span><RichText text={turn.answer}/>
+          <article className={s.assistantBubble}><span className={s.role}>✳ Scorpio · {turn.model}</span><RichText text={turn.answer}/>
             <small className={s.hint}>File-assisted answers in this preview are visible here but not yet saved in Chat history.</small>
           </article>
         </div>)}
-        {pending && <article className={s.assistantBubble} role="status"><span className={s.role}>✳ MioAgent is responding</span><div className={s.loading}>{current?`${current.status} · ${current.progress}%`:"Queued on local server…"}</div></article>}
+        {pending && <article className={s.assistantBubble} role="status"><span className={s.role}>✳ Scorpio is responding</span><div className={s.loading}>{current?`${current.status} · ${current.progress}%`:"Queued on local server…"}</div></article>}
         {current && ["failed","canceled"].includes(current.status) && <div className={s.error}>{current.error || "Local task did not complete"}</div>}
         {image && <article className={s.assistantBubble}><span className={s.role}>✳ Image creation</span><p>{image.prompt}</p>{image.state==="ready"?<><a href={`/api/studio-image/${image.id}`} target="_blank" rel="noopener noreferrer"><img className={s.image} src={`/api/studio-image/${image.id}`} alt={image.prompt}/><span className={s.textLink}>Open full PNG ↗</span></a><a className={s.download} download={`mioagent-${image.id}.png`} href={`/api/studio-image/${image.id}?download=1`}>↓ Download PNG</a></>:<div className={s.notice}>{image.state==="failed"?image.error:"Rendering on local ComfyUI…"}</div>}<p className={s.hint}>Generated images remain in the private Studio store; chat-history linking is a future update.</p></article>}
         {error && <p className={s.error} role="alert">{error}</p>}
@@ -205,7 +205,7 @@ export default function Chat() {
         <span className={s.attachmentName} title={f.name}>{f.name}</span>
         <button type="button" aria-label={`Remove ${f.name}`} disabled={sending} onClick={()=>removeFile(f.id)}>×</button>
       </div>)}</div>}
-      <textarea aria-label="Message MioAgent" value={prompt} onChange={e=>setPrompt(e.target.value)} rows={2} maxLength={imageMode?1200:12000} disabled={sending||(!imageMode&&!model?.configured&&files.length===0)} placeholder={imageMode?"Describe the image you want to create…":"Message MioAgent…"} onPaste={e=>{if(e.clipboardData.files.length){e.preventDefault();void attach(e.clipboardData.files);}}} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();void send();}}}/>
+      <textarea aria-label="Message Scorpio" value={prompt} onChange={e=>setPrompt(e.target.value)} rows={2} maxLength={imageMode?1200:12000} disabled={sending||(!imageMode&&!model?.configured&&files.length===0)} placeholder={imageMode?"Describe the image you want to create…":"Message Scorpio…"} onPaste={e=>{if(e.clipboardData.files.length){e.preventDefault();void attach(e.clipboardData.files);}}} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();void send();}}}/>
       <div className={s.composeBottom}><div className={s.pillRow}><button type="button" title="Attach images or documents" aria-label="Attach files" className={s.iconButton} disabled={sending} onClick={()=>picker.current?.click()}>＋ Attach</button><button className={s.iconButton} onClick={()=>setImageMode(v=>!v)} disabled={sending} aria-pressed={imageMode} aria-label={imageMode?"Switch to chat":"Create an image"}>{imageMode?"← Chat":"▧ Image"}</button><span className={s.hint}>{imageMode?"Uses local ComfyUI":"Enter to send · Shift+Enter for new line"}</span></div><button className={s.send} disabled={!prompt.trim()||sending||(!imageMode&&!model?.configured&&files.length===0)} onClick={()=>void send()}>{sending?"Working…":"Send ↑"}</button></div>
     </div><div className={s.note}>Attach, drop or paste files (6 per request, 8 MiB each). Image creation and reference editing use FLUX.2 automatically. Non-image file answers in this preview are not yet persisted. Online research and persistent project files remain in Studio / Work.</div></div>
   </UIShell>;
