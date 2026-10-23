@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import styles from "./studio.module.css";
+import { OmniImageView, imageIntent, sendImage } from "../_mio/omni-image";
 
 type Source = { ref: string; title: string; url: string; snippet: string };
 type Attachment = { id: string; name: string; kind: string; bytes: number; sha256: string };
 type ResponseData = { answer: string; model: string; mode: string; sources: Source[]; attachments: {ref: string;name:string}[]; source_scope: string };
-type Turn = { prompt: string; result: ResponseData | null; error: string | null; image?: string };
+type Turn = { prompt: string; result: ResponseData | null; error: string | null; image?: string; omni?: string };
 type Capabilities = { release: string; installed_models: string[]; image_generation_ready: boolean; image_generation_backend: string; fleet_active: boolean };
 const MAX_FILE = 8 * 1024 * 1024;
 
@@ -37,6 +38,7 @@ export default function Studio() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [imageJob, setImageJob] = useState<string | null>(null);
+  const [studioImageChat,setStudioImageChat] = useState<string|null>(null);
   const upload = useRef<HTMLInputElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -102,6 +104,18 @@ export default function Studio() {
     setTurns((prev) => [...prev, { prompt: question, result: null, error: null }]);
     setPrompt("");
     try {
+      const reference=files.find(f=>f.kind==="image");
+      const directive=await imageIntent(question,"chat",studioImageChat,reference?.id??null);
+      if(directive.image){
+        if(reference && files.length!==1)throw new Error("Use exactly one reference image when editing.");
+        const created=await sendImage(question,"chat",studioImageChat,reference?.id??null,
+          reference?"edit":"auto");
+        setStudioImageChat(created.conversation_id);
+        setTurns(prev=>{const next=[...prev];next[next.length-1]={prompt:question,result:{
+          answer:"",model:created.model,mode:"image",sources:[],attachments:[],source_scope:"Persistent FLUX.2 image"},
+          error:null,omni:created.turn_id};return next;});
+        setFiles([]);return;
+      }
       const response = await fetch("/api/studio", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: question, mode: "auto", attachments: files.map((f) => f.id) }),
@@ -126,6 +140,7 @@ export default function Studio() {
     <aside className={styles.side}>
       <div className={styles.logo}>✦ MioAgent <span>STUDIO v0.4I</span></div>
       <a href="/" className={styles.link}>← Dashboard</a>
+      <a href="/studio/image-lab" className={styles.link}>✦ Image Lab · FLUX.2 editing</a>
       <a href="/work" className={styles.link}>◈ Persistent Projects &amp; Work</a>
       <a href="/intelligence" className={styles.link}>◇ Engineering &amp; models</a>
       <a href="/assistant" className={styles.link}>◇ Conversation history</a>
@@ -154,7 +169,8 @@ export default function Studio() {
           <div className={styles.answer}><b>✦ MioAgent</b>
             {turn.error ? <p className={styles.error}>{turn.error}</p> : turn.result ? <>
               <div className={styles.response}>{turn.result.answer}</div>
-              {turn.image && <a href={turn.image} target="_blank" rel="noopener noreferrer"><img src={turn.image} alt={turn.prompt} className={styles.generated} /></a>}
+              {turn.omni && <OmniImageView id={turn.omni} onEdit={()=>setPrompt("Change this image: ")}/>}
+              {turn.image && <><a href={turn.image} target="_blank" rel="noopener noreferrer"><img src={turn.image} alt={turn.prompt} className={styles.generated} /></a><a href={`${turn.image}?download=1`} download={`mioagent-${turn.image.split("/").pop()}.png`} className={styles.model}>↓ Download PNG</a></>}
               {turn.result.sources.length > 0 && <div className={styles.sources}><h3>Retrieved sources (search snippets)</h3>
                 {turn.result.sources.map((s) => <div key={s.ref} className={styles.source}><span>[{s.ref}]</span> <a target="_blank" rel="noopener noreferrer" href={s.url}>{s.title}</a><p>{s.snippet}</p></div>)}
               </div>}

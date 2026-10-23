@@ -4,6 +4,7 @@ import UIShell from "../_mio/ui-shell";
 import RichText from "../_mio/rich-text";
 import { done, isDelegation, mioApi, postJson, type WorkProject, type WorkProjectDetail, type WorkRun } from "../_mio/api";
 import s from "../_mio/experience.module.css";
+import { imageIntent, sendImage, OmniImageThread } from "../_mio/omni-image";
 
 const MAX_FILE=8*1024*1024;
 async function fileBase64(file:File){
@@ -23,6 +24,7 @@ export default function ProjectsSpace(){
   const [create,setCreate]=useState(false);const [knowledge,setKnowledge]=useState(false);
   const [memory,setMemory]=useState("");const [busy,setBusy]=useState(false);const [error,setError]=useState("");
   const upload=useRef<HTMLInputElement>(null);
+  const [imageReference,setImageReference]=useState<string|null>(null);const [imageRevision,setImageRevision]=useState(0);
   const thread=useRef<HTMLDivElement>(null);
   const followLatest=useRef(true);
   const trackScroll=()=>{
@@ -68,7 +70,12 @@ export default function ProjectsSpace(){
   async function send(){
     if(!id||busy||prompt.trim().length<4)return;
     setBusy(true);setError("");
-    try{await mioApi(`work/projects/${id}/runs`,postJson({prompt:prompt.trim()}));setPrompt("");await load(id);}
+    try{
+      const directive=await imageIntent(prompt.trim(),"project",id,imageReference);
+      if(directive.image){await sendImage(prompt.trim(),"project",id,imageReference,imageReference?"edit":"auto");
+        setImageReference(null);setImageRevision(n=>n+1);setPrompt("");}
+      else {await mioApi(`work/projects/${id}/runs`,postJson({prompt:prompt.trim()}));setPrompt("");await load(id);}
+    }
     catch(e){setError(e instanceof Error?e.message:"Cannot send project task");}finally{setBusy(false);}
   }
   async function attach(files:FileList|null){
@@ -77,8 +84,9 @@ export default function ProjectsSpace(){
     try{
       if(files.length>6)throw new Error("Add at most six files at once");
       for(const file of Array.from(files)){
-        const saved=await mioApi<{id:string}>("studio/attachments",postJson({filename:file.name,base64:await fileBase64(file)}));
+        const saved=await mioApi<{id:string;kind:string}>("studio/attachments",postJson({filename:file.name,base64:await fileBase64(file)}));
         await mioApi(`work/projects/${id}/files`,postJson({attachment_id:saved.id}));
+        if(saved.kind==="image")setImageReference(saved.id);
       }
       await load(id);setKnowledge(true);
     }catch(e){setError(e instanceof Error?e.message:"Could not attach files");}
@@ -124,6 +132,7 @@ export default function ProjectsSpace(){
             <div className={s.scroll} ref={thread} onScroll={trackScroll}><div className={s.narrow}>
               {!items.length && <div className={s.centered}><span className={s.welcomeIcon}>✳</span><h2>Start a project discussion</h2><p>Ask questions using this project's instructions and linked documents.</p></div>}
               {items.map(item=>{const run=runs[item.id];return <div key={item.id} className={s.bubbleRow}><div className={s.userBubble}>{item.prompt}</div><div className={s.assistantBubble}><span className={s.role}>✳ MioAgent <span className={`${s.state} ${item.state==="needs_review"?s.warning:item.state==="failed"?s.failed:""}`}>{item.state.replaceAll("_"," ")}</span></span>{run?.result?<RichText text={run.result}/>:<div className={s.loading}>{done(item.state)?run?.error??"Could not load result":"Running on Ubuntu server…"}</div>}{run?.sources&&run.sources.length>0&&<div>{run.sources.map(src=><a className={s.source} key={src.ref} href={src.url} target="_blank" rel="noopener noreferrer">[{src.ref}] {src.title}</a>)}</div>}{run?.result&&<div className={s.answerNote}><span>{run.model||"Local model"}</span><a className={s.textLink} href={`/api/proxy/work/runs/${item.id}/artifact`} target="_blank" rel="noopener noreferrer">Open Markdown ↗</a></div>}</div></div>;})}
+              <OmniImageThread scope="project" scopeId={id} revision={imageRevision} onEdit={()=>setPrompt("Change this image: ")}/>
               {error&&<p className={s.error} role="alert">{error}</p>}
             </div></div>
             <div className={s.composerArea}><div className={s.composer}><textarea aria-label="Message project" value={prompt} onChange={e=>setPrompt(e.target.value)} rows={2} maxLength={6000} disabled={busy} placeholder="Message this project…" onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();void send();}}}/><div className={s.composeBottom}><div className={s.pillRow}><input hidden type="file" multiple ref={upload} onChange={e=>void attach(e.target.files)}/><button className={s.iconButton} aria-label="Attach project files" disabled={busy} onClick={()=>upload.current?.click()}>＋ Attach files</button><span className={s.hint}>Saved with project</span></div><button className={s.send} disabled={busy||prompt.trim().length<4} onClick={()=>void send()}>Send ↑</button></div></div><p className={s.note}>Project instructions, approved memories and files are used. Automatic cross-turn chat reasoning is not yet implemented.</p></div>

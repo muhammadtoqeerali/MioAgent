@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
-export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   if (process.env.VERCEL === "1") return NextResponse.json({ detail: "Local only" }, { status: 503 });
   const id = (await ctx.params).id;
   if (!/^[0-9a-f]{32}$/.test(id)) return NextResponse.json({ detail: "Not found" }, { status: 404 });
@@ -17,8 +17,10 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     if (!result.ok) return NextResponse.json({ detail: "Image not available" }, { status: 404 });
     const bytes = await result.arrayBuffer();
     if (bytes.byteLength > 8 * 1024 * 1024) return NextResponse.json({ detail: "Image too large" }, { status: 413 });
+    const download = req.nextUrl.searchParams.get("download") === "1";
     return new NextResponse(bytes, { status: 200,
-      headers: { "Content-Type": "image/png", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+      headers: { "Content-Type": "image/png", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+        ...(download ? {"Content-Disposition": `attachment; filename="mioagent-${id}.png"`} : {}) } });
   } catch {
     return NextResponse.json({ detail: "Image backend offline" }, { status: 502 });
   }

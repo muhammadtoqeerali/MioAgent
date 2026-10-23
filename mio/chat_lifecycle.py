@@ -74,6 +74,9 @@ def register_chat_lifecycle(app: FastAPI, require_token: Callable) -> None:
                     Task.id.in_(task_ids), Task.status.in_(["queued", "running"]))).first()
                 if active:
                     raise HTTPException(409, detail="This chat has a queued or running task; finish or cancel it first")
+            # IMG3A: owner deletion includes associated image-turn history.
+            from mio.omni_images import ImageTurn
+            db.execute(delete(ImageTurn).where(ImageTurn.scope == "chat", ImageTurn.scope_id == conversation_id))
             db.execute(delete(ChatMessage).where(ChatMessage.conversation_id == conversation_id))
             db.execute(delete(AIJob).where(AIJob.conversation_id == conversation_id))
             if task_ids:

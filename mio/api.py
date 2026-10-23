@@ -30,6 +30,7 @@ from mio.database import (
     utcnow,
 )
 from mio.engineering_engine import EngineeringStop, lock_acceptance_tests
+from mio.image_lab_api import register_image_lab_routes
 from mio.llm import ModelRouter
 from mio.project_mode import (
     MAX_REQUIREMENTS,
@@ -172,7 +173,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Conversation not found")
             messages = db.scalars(
                 select(ChatMessage).where(ChatMessage.conversation_id == conversation_id)
-                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc()).limit(100)
+                .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
             ).all()
             return {"id": conversation.id, "title": conversation.title,
                     "messages": [serialize_message(m) for m in messages]}
@@ -533,6 +534,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
 
     register_intelligence_routes(app, require_token)
     register_studio_routes(app, settings, require_token)
+    register_image_lab_routes(app, require_token)
     register_work_routes(app, settings, require_token)
     register_autonomy_review_routes(app, require_token)
     return app

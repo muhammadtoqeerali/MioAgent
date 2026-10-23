@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./work.module.css";
+import { imageIntent, sendImage, OmniImageThread } from "../_mio/omni-image";
 
 type Project = { id: string; title: string; instructions: string; created: number };
 type Note = { id: string; content: string };
@@ -43,6 +44,8 @@ export default function WorkPage() {
   const [memory, setMemory] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [imageReference,setImageReference] = useState<string|null>(null);
+  const [imageRevision,setImageRevision] = useState(0);
   const [showNew, setShowNew] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
 
@@ -92,6 +95,11 @@ export default function WorkPage() {
     if (!selected || busy || prompt.trim().length < 4) return;
     setBusy(true); setError("");
     try {
+      const directive=await imageIntent(prompt.trim(),"work",selected,imageReference);
+      if(directive.image){
+        await sendImage(prompt.trim(),"work",selected,imageReference,imageReference?"edit":"auto");
+        setPrompt("");setImageReference(null);setImageRevision(n=>n+1);return;
+      }
       const result = await api<{ id: string }>(`work/projects/${selected}/runs`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: prompt.trim() }),
       });
@@ -120,12 +128,13 @@ export default function WorkPage() {
     setBusy(true); setError("");
     try {
       for (const file of Array.from(files).slice(0, 6)) {
-        const uploaded = await api<{ id: string }>("studio/attachments", {
+        const uploaded = await api<{ id: string; kind: string }>("studio/attachments", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ filename: file.name, base64: await encode(file) }),
         });
         await api(`work/projects/${selected}/files`, { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ attachment_id: uploaded.id }) });
+        if(uploaded.kind==="image")setImageReference(uploaded.id);
       }
       await loadProject(selected);
     } catch (e) { setError(e instanceof Error ? e.message : "Attachment could not be saved"); }
@@ -186,6 +195,7 @@ export default function WorkPage() {
               {run.state === "needs_review" && <p className={styles.warning}>The draft did not pass citation validation. It is available to inspect, but is not verified.</p>}
             </article>}
           </section>
+          {selected&&<OmniImageThread scope="work" scopeId={selected} revision={imageRevision} onEdit={()=>setPrompt("Change this image: ")}/>}
           <aside className={styles.right}>
             <section className={styles.panel}><h2>Project files <span>{detail?.assets.length ?? 0}</span></h2>
               <input ref={picker} type="file" hidden multiple onChange={(e) => void attach(e.target.files)}/>
