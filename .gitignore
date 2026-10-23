@@ -28,3 +28,6 @@ apps/dashboard/node_modules/
 
 # Frontend build output
 *.tsbuildinfo
+
+# Project-contained owner-private MioAgent runtime data, credentials and archives
+/.mioagent-private/
