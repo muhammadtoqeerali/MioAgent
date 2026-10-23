@@ -67,6 +67,9 @@ async def execute(root: Path, run_id: str, settings: Settings) -> dict:
     record = run_info(root, run_id)
     if record["state"] != "queued":
         raise WorkStop("Only a new queued task can be executed")
+    if record["mode"] == "inspection_queued":
+        from mio.agentic_work_v06c import execute_inspection_run
+        return execute_inspection_run(root, run_id)
     if record["mode"] == "engineering_queued":
         return await execute_engineering(root, run_id, settings)
     info = project_info(root, record["project"])

@@ -180,23 +180,41 @@ def link_file(root: Path, project_id: str, file_id: str) -> dict:
     return value
 
 
-def create_run(root: Path, project_id: str, prompt: str, *, engineering: bool = False) -> dict:
+def create_run(root: Path, project_id: str, prompt: str, *, engineering: bool = False,
+               inspection_sources: list[str] | None = None) -> dict:
     if not isinstance(prompt, str) or not 4 <= len(prompt.strip()) <= 6000:
         raise WorkStop("Task instructions must be 4–6000 characters")
+    if engineering and inspection_sources is not None:
+        raise WorkStop("Engineering and inspection are different task types")
+    if inspection_sources is not None:
+        from mio.agentic_plan_v06b import AgenticPreviewDenied, plan
+        try:
+            selected = plan(prompt, inspection_sources).sources
+        except AgenticPreviewDenied as exc:
+            raise WorkStop("Invalid owner-selected source allowlist") from exc
+        source_json = json.dumps(list(selected))
+    else:
+        source_json = "[]"
     project_info(root, project_id)
     now = int(time.time())
     value = {"id": uuid.uuid4().hex, "project": project_id, "prompt": prompt.strip(),
-             "state": "queued", "mode": "engineering_queued" if engineering else "pending",
+             "state": "queued", "mode": ("inspection_queued" if inspection_sources is not None
+             else ("engineering_queued" if engineering else "pending")),
+             "source_json": source_json,
              "created": now, "updated": now}
     with db(root) as conn:
         conn.execute("BEGIN IMMEDIATE")
         running = conn.execute("SELECT count(*) FROM runs WHERE state IN ('queued','running')").fetchone()[0]
         if running:
             raise WorkStop("One Work run at a time; wait for it to finish")
-        conn.execute("INSERT INTO runs (id,project,prompt,state,mode,created,updated) VALUES "
-                     "(:id,:project,:prompt,:state,:mode,:created,:updated)", value)
+        conn.execute("INSERT INTO runs (id,project,prompt,state,mode,created,updated,sources) VALUES "
+                     "(:id,:project,:prompt,:state,:mode,:created,:updated,:source_json)", value)
         conn.execute("INSERT INTO events(run,phase,detail,created) VALUES (?,?,?,?)",
                      (value["id"], "queued", "Owner submitted project task", now))
+        if inspection_sources is not None:
+            conn.execute("INSERT INTO events(run,phase,detail,created) VALUES (?,?,?,?)",
+                         (value["id"], "inspection.approved",
+                          "Authenticated owner approved bounded static source inspection", now))
     return value
 
 

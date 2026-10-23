@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -44,8 +45,9 @@ class AssetNew(BaseModel):
 
 class TaskNew(BaseModel):
     prompt: str = Field(min_length=4, max_length=6000)
-    task_type: Literal["bounded", "engineering"] = "bounded"
+    task_type: Literal["bounded", "engineering", "inspection"] = "bounded"
     approved: bool = False
+    sources: list[str] = Field(default_factory=list, max_length=8)
 
 
 def register_work_routes(app: FastAPI, settings: Settings, require_token: Callable,
@@ -109,10 +111,18 @@ def register_work_routes(app: FastAPI, settings: Settings, require_token: Callab
         try:
             if is_archived(root, project_id):
                 raise WorkStop("Restore this archived project before starting a run")
-            if payload.task_type == "engineering" and not payload.approved:
-                raise WorkStop("Explicit approval required for isolated Python engineering")
-            run = create_run(root, project_id, payload.prompt,
-                             engineering=payload.task_type == "engineering")
+            if payload.task_type in ("engineering", "inspection") and not payload.approved:
+                raise WorkStop("Explicit owner approval is required for this Work task")
+            if payload.task_type == "inspection":
+                if os.environ.get("MIO_AGENT6C_INSPECTION_ENABLED") != "1":
+                    raise WorkStop("Owner-approved source inspection is not enabled")
+                run = create_run(root, project_id, payload.prompt,
+                                 inspection_sources=payload.sources)
+            else:
+                if payload.sources:
+                    raise WorkStop("Source allowlist is only available for inspection tasks")
+                run = create_run(root, project_id, payload.prompt,
+                                 engineering=payload.task_type == "engineering")
         except WorkStop as exc:
             raise HTTPException(409, detail=str(exc)) from exc
         # Persistent worker owns the queue; browser/API process is not a task host.
