@@ -11,7 +11,7 @@ type RunSummary = { id: string; prompt: string; state: string; mode: string; mod
 type Detail = Project & { memories: Note[]; assets: Asset[]; runs: RunSummary[] };
 type Source = { ref: string; title: string; url: string; snippet: string };
 type WorkEvent = { phase: string; detail: string; created: number };
-type WorkRun = RunSummary & { result: string | null; sources: Source[]; error: string | null; events: WorkEvent[] };
+type WorkRun = RunSummary & { result: string | null; sources: (Source | string)[]; error: string | null; events: WorkEvent[] };
 type Skill = { id: string; title: string; description: string; tools: string[] };
 type Overview = { release: string; projects: Project[]; skills: Skill[]; permissions: Record<string, boolean> };
 
@@ -142,8 +142,8 @@ export default function WorkPage() {
   }
   function download() {
     if (!run?.result) return;
-    const citations = run.sources.map((s) => `- [${s.ref}] ${s.title}: ${s.url}`).join("\n");
-    const contents = `# MioAgent Work task\n\n${run.prompt}\n\n${run.result}\n\n## Sources\n${citations}\n`;
+    const citations = run.sources.map((s) => typeof s === "string" ? `- ${s}` : `- [${s.ref}] ${s.title}: ${s.url}`).join("\n");
+    const contents = `# Scorpio Work task\n\n${run.prompt}\n\n${run.result}\n\n## Sources\n${citations}\n`;
     const url = URL.createObjectURL(new Blob([contents], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = `mio-work-${run.id.slice(0, 8)}.md`;
     link.click(); URL.revokeObjectURL(url);
@@ -151,7 +151,7 @@ export default function WorkPage() {
 
   return <div className={styles.shell}>
     <aside className={styles.sidebar}>
-      <div className={styles.brand}>✦ MioAgent <small>WORKSPACE v0.4K</small></div>
+      <div className={styles.brand}>✦ Scorpio <small>WORKSPACE v0.4K</small></div>
       <nav className={styles.navigation}>
         <a href="/studio">← Studio chat &amp; images</a><a href="/intelligence">Engineering console</a><a href="/work/reviews">Engineering reviews</a><a href="/">System overview</a>
       </nav>
@@ -167,7 +167,7 @@ export default function WorkPage() {
       <div className={styles.sidebarBottom}><span>Local only · Private SQLite</span><small>Project data survives browser reloads. Tool permissions remain enforced by the backend.</small></div>
     </aside>
     <main className={styles.content}>
-      <header className={styles.header}><div><strong>{detail?.title ?? "MioAgent Work"}</strong>
+      <header className={styles.header}><div><strong>{detail?.title ?? "Scorpio Work"}</strong>
         <small>Projects · Evidence · Memory · Deliverables</small></div><span className={styles.chip}>LOCAL WORK</span></header>
       {error && <div role="alert" className={styles.error}>{error} <button onClick={() => setError("")}>Dismiss</button></div>}
       {!selected ? <section className={styles.empty}><h1>Work on projects, not just prompts.</h1><p>Create a project to keep its instructions, files, memory and audited tasks together.</p><button onClick={() => setShowNew(true)}>Create a project →</button></section> : <>
@@ -189,7 +189,7 @@ export default function WorkPage() {
               {run.error && <p className={styles.error}>{run.error}</p>}
               {run.result && <><div className={styles.answer}>{run.result}</div><button className={styles.export} onClick={download}>↓ Save Markdown deliverable</button></>}
               {run.sources.length > 0 && <div className={styles.sources}><h3>Retrieved source snippets</h3>
-                {run.sources.map((source) => <p key={source.ref}><b>{source.ref}</b> <a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a></p>)}
+                {run.sources.map((source, index) => typeof source === "string" ? <p key={index}>{source}</p> : <p key={source.ref}><b>{source.ref}</b> <a href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</a></p>)}
               </div>}
               <div className={styles.events}><h3>Audited actions</h3>{run.events.map((event, i) => <div key={i}><b>{event.phase}</b><span>{event.detail}</span></div>)}</div>
               {run.state === "needs_review" && <p className={styles.warning}>The draft did not pass citation validation. It is available to inspect, but is not verified.</p>}
@@ -216,7 +216,7 @@ export default function WorkPage() {
           </aside>
         </div>
         <div className={styles.compose}><textarea value={prompt} disabled={busy} maxLength={6000}
-          onChange={(e) => setPrompt(e.target.value)} placeholder="Describe the outcome you want. MioAgent will select bounded tools automatically…"
+          onChange={(e) => setPrompt(e.target.value)} placeholder="Describe the outcome you want. Scorpio will select bounded tools automatically…"
           onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); void send(); } }}/>
           <button disabled={busy || prompt.trim().length < 4} onClick={() => void send()}>{busy ? "…" : "↑"}</button>
           <small>Ctrl+Enter · Live research, project files and local model review · No unrestricted computer actions</small></div>

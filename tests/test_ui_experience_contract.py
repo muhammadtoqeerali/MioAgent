@@ -38,9 +38,23 @@ def test_work_has_enforced_ability_boundary_and_real_run_events():
 
 def test_control_room_uses_recorded_events_and_links_back():
     code = load("control-room/page.tsx")
-    assert 'phaseSeen(' in code
-    assert 'model.review_unavailable' in code
-    assert '/work-mode' in code
+    if code.strip() == 'export { default } from "../_mio/scorpio-control-room";':
+        # Scorpio7A extracts the real implementation into a client component.
+        # Preserve the evidence-backed contract across that refactor.
+        implementation = load("_mio/scorpio-control-room.tsx")
+        actions = load("_mio/scorpio-approval-panel.tsx")
+        for required in (
+            'mioApi<WorkRun>', 'work/runs/${runId}', 'run.events.map',
+            'statusKind(run)', 'needs_review', 'ScorpioApprovalPanel',
+            '/work-mode',
+        ):
+            assert required in implementation
+        for required in ('task_type', 'approved: true', 'onSubmitted'):
+            assert required in actions
+    else:
+        assert 'phaseSeen(' in code
+        assert 'model.review_unavailable' in code
+        assert '/work-mode' in code
 
 
 def test_markdown_fenced_code_tracks_state_in_normal_loop():

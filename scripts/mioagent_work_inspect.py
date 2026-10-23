@@ -26,6 +26,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 if str(PROJECT) not in sys.path:
     sys.path.insert(0, str(PROJECT))
 BASELINE = "69319d223fcfcee8983363e588e74292205cc2e4"
+CLIENT_PUBLICATION = "f8712a8692a321e2521615119ed1e26a1b052720"
 ORIGIN = "https://github.com/muhammadtoqeerali/MioAgent.git"
 FLAG = "MIO_AGENT6C_INSPECTION_ENABLED"
 ENDPOINT = "http://127.0.0.1:8000"
@@ -82,6 +83,28 @@ def source_digests(sources: tuple[str, ...]) -> dict[str, str]:
     return digests
 
 
+# Keep the accepted AGENT6C worker/API bytes pinned while allowing a later,
+# selectively published main commit. The original exact-HEAD equality check
+# rejected the AGENT6E publication itself and every subsequent safe update.
+PROTECTED_WORK_SOURCES = (
+    "mio/work_api.py", "mio/work_core.py", "mio/work_agent.py",
+    "mio/agentic_work_v06c.py", "mio/agentic_plan_v06b.py",
+    "mio/agentic_preview_v06b.py",
+)
+
+
+def verify_published_revision() -> None:
+    """Accept only descendants of the owner-accepted AGENT6E publication.
+
+    Changes to live Work inspection implementations require fresh acceptance,
+    even if such changes are subsequently committed on main.
+    """
+    git_bytes("merge-base", "--is-ancestor", CLIENT_PUBLICATION, "HEAD")
+    for path in PROTECTED_WORK_SOURCES:
+        require(git_bytes("show", "HEAD:" + path) == git_bytes("show", BASELINE + ":" + path),
+                "Published Work inspection source changed since accepted baseline: " + path)
+
+
 def verified_service_flag(pid: int) -> bool:
     require(isinstance(pid, int) and pid > 1, "Invalid managed process")
     proc = Path(f"/proc/{pid}")
@@ -101,14 +124,12 @@ def preflight_sources(sources: tuple[str, ...]) -> dict[str, str]:
             "Not the accepted MioAgent checkout")
     require(PROJECT.is_dir() and not PROJECT.is_symlink() and PROJECT.resolve() == PROJECT,
             "Unsafe project checkout")
-    require(git_bytes("rev-parse", "HEAD").strip().decode() == BASELINE,
-            "Published AGENT6C Git commit changed")
+    verify_published_revision()
     require(git_bytes("branch", "--show-current").strip() == b"main", "Git branch changed")
     require(git_bytes("remote", "get-url", "origin").strip().decode() == ORIGIN,
             "GitHub origin changed")
     require(git_bytes("diff", "--cached", "--name-only", "-z") == b"", "Git staging not empty")
-    for source in ("mio/work_api.py", "mio/work_core.py", "mio/work_agent.py",
-                   "mio/agentic_work_v06c.py", "mio/agentic_plan_v06b.py", "mio/agentic_preview_v06b.py"):
+    for source in PROTECTED_WORK_SOURCES:
         _ = source_digests((source,))
     api_pid = native.read_pid("api")
     worker_pid = worker.current()
