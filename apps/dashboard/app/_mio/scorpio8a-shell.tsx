@@ -11,6 +11,7 @@ const NAV: Nav[] = [
   {name:"Chat",url:"/chat",symbol:"◉",match:["/chat"]},
   {name:"Projects",url:"/projects-space",symbol:"▦",match:["/projects-space","/projects"]},
   {name:"Work",url:"/work-mode",symbol:"▤",match:["/work-mode","/work"]},
+  {name:"Supervisor",url:"/supervisor",symbol:"✦",match:["/supervisor"]},
   {name:"Approvals",url:"/approvals",symbol:"◇",match:["/approvals"]},
   {name:"Tools & Permissions",url:"/tools-permissions",symbol:"⬡",match:["/tools-permissions"]},
   {name:"System Health",url:"/system-health",symbol:"◴",match:["/system-health"]},

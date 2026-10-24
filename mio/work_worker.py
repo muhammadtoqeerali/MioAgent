@@ -16,6 +16,7 @@ from pathlib import Path
 
 from mio.config import Settings
 from mio.work_agent import execute
+from mio.supervisor_core import advance_supervisor
 from mio.work_core import RUNTIME, WorkStop, db, event, run_info, update
 
 WORK_ROOT = RUNTIME / "work"
@@ -76,6 +77,7 @@ async def serve(root: Path = WORK_ROOT, poll_seconds: float = 2.0) -> None:
         print(f"MioAgent persistent worker ready; interrupted old runs={interrupted}", flush=True)
         settings = Settings()
         while active:
+            advance_supervisor(root)
             run_id = pending(root)
             if run_id:
                 print(f"Executing queued Work run {run_id[:8]}", flush=True)
