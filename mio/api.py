@@ -40,11 +40,12 @@ from mio.project_mode import (
 )
 from mio.project_tasks import mark_project_canceled_for_task
 from mio.repair_tasks import failed_verification
+from mio.scorpio9c_observe_api import register_scorpio9c_observe_routes
 from mio.studio_api import register_studio_routes
 from mio.supervisor_api import register_supervisor_routes
 from mio.supervisor_proposal_api import register_supervisor_proposal_routes
-from mio.work_api import register_work_routes
 from mio.system_telemetry import register_system_telemetry_routes
+from mio.work_api import register_work_routes
 from mio.workers import reset_interrupted_tasks, worker_loop
 
 
@@ -541,6 +542,7 @@ def create_app(config: Settings | None = None) -> FastAPI:
     register_work_routes(app, settings, require_token)
     register_supervisor_routes(app, require_token)
     register_supervisor_proposal_routes(app, settings, require_token)
+    register_scorpio9c_observe_routes(app, require_token)
     register_system_telemetry_routes(app, require_token, settings)
     register_autonomy_review_routes(app, require_token)
     return app
