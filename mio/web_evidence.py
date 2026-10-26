@@ -17,6 +17,8 @@ from collections.abc import Callable
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
+from mio.scorpio9d3_encoding import DecodeError, decode_document
+
 MAX_RESPONSE = 420_000
 MAX_EXCERPT = 4000
 MAX_URL = 1500
@@ -139,17 +141,22 @@ def fetch_public_page(url: str) -> dict:
         media_type = response.getheader("Content-Type", "").split(";", 1)[0].lower().strip()
         if media_type not in {"text/html", "application/xhtml+xml", "text/plain"}:
             raise EvidenceError("Page media type is not supported")
-        if response.getheader("Content-Encoding", "identity").lower() != "identity":
-            raise EvidenceError("Compressed page not supported")
+        content_encoding = response.getheader("Content-Encoding", "identity")
         length = response.getheader("Content-Length")
         if length and (not length.isdigit() or int(length) > MAX_RESPONSE):
             raise EvidenceError("Page exceeds byte budget")
         raw = response.read(MAX_RESPONSE + 1)
         if len(raw) > MAX_RESPONSE:
             raise EvidenceError("Page exceeded byte budget")
-        excerpt = _extract(raw, media_type)
+        try:
+            decoded, encoding = decode_document(raw, content_encoding, limit=MAX_RESPONSE)
+        except DecodeError as exc:
+            raise EvidenceError(str(exc)) from exc
+        excerpt = _extract(decoded, media_type)
         return {"page_verified": True, "page_excerpt": excerpt,
                 "page_sha256": hashlib.sha256(raw).hexdigest(),
+                "page_decoded_sha256": hashlib.sha256(decoded).hexdigest(),
+                "page_encoding": encoding,
                 "evidence_scope": "public page excerpt, not full publication verification"}
     except (OSError, ssl.SSLError, http.client.HTTPException, TimeoutError) as exc:
         raise EvidenceError("Page transport unavailable") from exc
