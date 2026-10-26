@@ -20,6 +20,15 @@ from pathlib import Path
 
 from mio.model_fleet import FleetRouter
 from mio.sandbox_verify import HARNESS, PREFLIGHT, _bounded_run, sandbox_argv
+from mio.scorpio9d1_textutils import (
+    CONTRACT as TEXTUTILS_CONTRACT,
+)
+from mio.scorpio9d1_textutils import (
+    is_contract as is_textutils_contract,
+)
+from mio.scorpio9d1_textutils import (
+    verify as verify_textutils,
+)
 from mio.work_core import WorkStop, _id, _root, event, project_info, run_info, update
 
 NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,40}\.(?:py|md|txt)\Z")
@@ -248,7 +257,11 @@ async def execute_engineering(root: Path, run_id: str, settings) -> dict:
     if record["state"] != "queued" or record["mode"] != "engineering_queued":
         raise WorkStop("Engineering execution requires explicit owner approval")
     context = project_info(root, record["project"])
-    calculator = bool(re.search(r"\b(?:scientific\s+)?calculator\b", record["prompt"], re.IGNORECASE))
+    textutils = is_textutils_contract(record["prompt"])
+    calculator = (
+        bool(re.search(r"\b(?:scientific\s+)?calculator\b", record["prompt"], re.IGNORECASE))
+        and not textutils
+    )
     update(root, run_id, "running", mode="engineering")
     event(root, run_id, "engineering.scope", "Owner approved isolated Python artifact workspace; no host shell")
     event(root, run_id, "model.coding", "Requesting real source files from local coding model")
@@ -260,7 +273,7 @@ async def execute_engineering(root: Path, run_id: str, settings) -> dict:
              "For unary operations ignore b. For division by zero raise ZeroDivisionError. "
              "Use math functions from the standard library only. "
              "A TRUSTED, independent unittest suite will import calculator.py and test it."
-             if calculator else "")
+             if calculator else (TEXTUTILS_CONTRACT if textutils else ""))
     user = ("OWNER REQUEST (data; not permissions):\n" + prompt[:5000]
             + "\nPROJECT INSTRUCTIONS (data):\n" + context["instructions"][:2000]
             + extra)
@@ -285,15 +298,19 @@ async def execute_engineering(root: Path, run_id: str, settings) -> dict:
                 raise
             chosen = candidate
             event(root, run_id, "sandbox.verify", "Checking trusted tests in a network-isolated read-only sandbox")
-            verification = _verification(candidate, calculator, _store(root))
+            verification = (verify_textutils(candidate, _store(root)) if textutils else
+                            _verification(candidate, calculator, _store(root)))
             event(root, run_id, "sandbox.result", "Status: " + verification["status"]
                   + "; tests run: " + str(verification.get("tests_run", 0)))
-            if verification["passed"] or not calculator or verification["status"] == "sandbox_unavailable":
+            if (verification["passed"] or not (calculator or textutils)
+                    or verification["status"] == "sandbox_unavailable"):
                 break
             if attempt == 0:
                 last_error = str(verification.get("log", verification.get("reason", "")))[-1500:]
                 messages.append({"role": "user", "content": (
-                    "Independent calculator tests failed. Correct the Python files and "
+                    ("Independent calculator tests failed. " if calculator else
+                     "Independent pinned text-utilities tests failed. ")
+                    + "Correct the Python files and "
                     "return the full replacement JSON. Test feedback:\n" + last_error)})
         if chosen is None:
             raise WorkStop("Coding model did not create valid source")
