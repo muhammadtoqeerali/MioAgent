@@ -67,6 +67,10 @@ async def execute(root: Path, run_id: str, settings: Settings) -> dict:
     record = run_info(root, run_id)
     if record["state"] != "queued":
         raise WorkStop("Only a new queued task can be executed")
+    from mio.scorpio9c4_worker_tool import maybe_execute_scoped_tool
+    tool_result = maybe_execute_scoped_tool(root, run_id, record)
+    if tool_result is not None:
+        return tool_result
     if record["mode"] == "inspection_queued":
         from mio.agentic_work_v06c import execute_inspection_run
         return execute_inspection_run(root, run_id)
