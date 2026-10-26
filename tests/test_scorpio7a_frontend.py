@@ -35,24 +35,27 @@ def test_panel_uses_authenticated_proxy_only():
     assert "fetch(" not in text
 
 
-def test_review_checkbox_is_required():
+def test_review_requires_explicit_click():
     text = read(PANEL)
-    assert 'approved && feedback.trim().length >= 10' in text
-    assert 'onClick={() => void submit()}' in text
+    assert 'onClick={() => void approve()}' in text
+    assert 'onClick={() => setRejected(true)}' in text
+    assert 'if (!engineeringRetry || submitting || rejected' in text
+    assert 'if (active) return' in text
 
 
 def test_review_does_not_forge_permissions():
     text = read(PANEL)
     assert "host_shell" not in text
     assert "permissions:" not in text
-    assert "task_type: choice, approved: true" in text
+    assert 'task_type: "engineering", approved: true' in text
+    assert 'response.mode !== "engineering_queued"' in text
 
 
 def test_review_does_not_silently_resume():
     text = read(PANEL)
-    assert "NEW follow-up" in text
-    assert "not an automatic resume" in text
-    assert "/resume" not in text
+    assert 'response.id === run.id' in text
+    assert 'The original was not resumed' in text
+    assert '/resume' not in text
 
 
 def test_allowlist_restricted():
@@ -64,8 +67,10 @@ def test_allowlist_restricted():
 
 def test_next_task_not_triggered_by_effect():
     text = read(PANEL)
-    assert "void submit()" in text
-    assert "useEffect" not in text
+    assert 'onClick={() => void approve()}' in text
+    assert 'useEffect(() => { setRejected(false); setMessage(""); }, [run.id]);' in text
+    assert 'async function approve()' in text
+    assert 'mioApi<{ id: string; mode: string }>' in text.split('async function approve()', 1)[1]
 
 
 def test_failure_and_review_not_success():
@@ -77,7 +82,8 @@ def test_failure_and_review_not_success():
 def test_active_tasks_not_review_approved():
     text = read(PANEL)
     assert 'const active = run.state === "queued" || run.state === "running"' in text
-    assert "!active && approved" in text
+    assert 'if (active) return' in text
+    assert 'if (!engineeringRetry || submitting || rejected' in text
 
 
 def test_event_evidence_visible():

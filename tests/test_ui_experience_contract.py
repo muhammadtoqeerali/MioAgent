@@ -29,8 +29,11 @@ def test_projects_use_real_file_memory_and_run_endpoints():
 
 def test_work_has_enforced_ability_boundary_and_real_run_events():
     code = load("work-mode/page.tsx")
-    for required in ('kind==="supported"', 'kind==="computer"', 'setAck', 'work/projects', 'work/runs/', 'run.events'):
+    for required in ('engineeringGoal', 'unsupportedGoal', 'proposedType',
+                     'Approve & start', 'Reject — do nothing', 'work/projects',
+                     'work/runs/', 'run.events'):
         assert required in code
+    assert 'task_type:proposedType,approved:true' in code
     assert 'independent Ubuntu Work worker' in code
     assert 'during API restarts' in code
     assert 'Task is active in the API process' not in code

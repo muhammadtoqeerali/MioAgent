@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { mioApi, postJson } from "./api";
 import styles from "./scorpio.module.css";
 
@@ -10,9 +10,9 @@ type ReviewRun = {
   events?: { phase: string; detail: string }[];
 };
 
+// Keep the exported allowlist for any existing read-only inspection consumers.
 const SAFE_PATH = /^(mio|tests|scripts|docs)\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.(py|md|ts|tsx)$/;
 const DENIED_PARTS = new Set([".git", ".mioagent-private", "node_modules", ".next", "secrets", "private", "credentials", "downloads", "backups", "__pycache__", "venv", ".venv"]);
-
 export function allowedSources(raw: string): string[] | null {
   const paths = raw.split(/[\n,]+/).map(x => x.trim()).filter(Boolean);
   if (paths.length < 1 || paths.length > 8 || new Set(paths).size !== paths.length) return null;
@@ -20,75 +20,65 @@ export function allowedSources(raw: string): string[] | null {
   return paths;
 }
 
+const ENGINEERING_PREFIX = "SCORPIO9D1 TEXTUTILS: ";
+
 export default function ScorpioApprovalPanel({ projectId, run, onSubmitted }: {
   projectId: string; run: ReviewRun; onSubmitted?: (newId: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [choice, setChoice] = useState<"bounded" | "inspection">("bounded");
-  const [feedback, setFeedback] = useState("");
-  const [sources, setSources] = useState("mio/work_agent.py\nmio/work_core.py");
-  const [approved, setApproved] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [rejected, setRejected] = useState(false);
   const [message, setMessage] = useState("");
+  useEffect(() => { setRejected(false); setMessage(""); }, [run.id]);
   const active = run.state === "queued" || run.state === "running";
-  const review = ["needs_review", "failed", "interrupted"].includes(run.state);
-  const inspection = choice === "inspection";
-  const selectedSources = allowedSources(sources);
-  const ready = !submitting && !active && approved && feedback.trim().length >= 10 && (!inspection || selectedSources !== null);
-  const reason = run.state === "needs_review"
-    ? "This run has finished but its output needs your review. Its previous execution cannot be silently resumed."
-    : run.state === "interrupted"
-      ? "The prior worker run was interrupted. You can submit a new bounded follow-up, not resume an unknown checkpoint."
-      : run.state === "failed"
-        ? "The prior task failed. Review its error and give new guidance before retrying."
-        : active ? "The worker is still processing this run. Wait for a terminal state before starting another." : "The completed result is available for review.";
+  const needsDecision = ["failed", "needs_review", "interrupted"].includes(run.state);
+  // A proposed retry must retain the exact original owner-approved profile.
+  // Never route an engineering failure into research or claim it is a resumed run.
+  const textutilsTask = run.prompt.startsWith(ENGINEERING_PREFIX) ||
+    ["normalize_whitespace", "count_words", "is_palindrome", "slugify"]
+      .every(name => run.prompt.includes(name));
+  // For an old task without the prefix, propose the fixed trusted contract;
+  // do not carry old research follow-ups or untrusted extra instructions over.
+  const proposedPrompt = run.prompt.startsWith(ENGINEERING_PREFIX)
+    ? run.prompt
+    : `${ENGINEERING_PREFIX} Build the offline Python textutils.py library implementing normalize_whitespace, count_words, is_palindrome, and slugify using only the standard library and the platform's independent 13 tests.`;
+  const engineeringRetry = ["failed", "needs_review"].includes(run.state)
+    && run.mode === "engineering" && textutilsTask
+    && proposedPrompt.length <= 6000 && /^[0-9a-f]{32}$/.test(run.id)
+    && (run.events ?? []).some(event => event.phase === "validation.reject");
 
-  async function submit() {
-    if (!ready || !projectId || !/^[0-9a-f]{32}$/.test(projectId)) return;
+  async function approve() {
+    if (!engineeringRetry || submitting || rejected || !/^[0-9a-f]{32}$/.test(projectId)) return;
     setSubmitting(true); setMessage("");
     try {
-      const prompt = [
-        `Owner-authorized NEW follow-up to Work run ${run.id}.`,
-        `Prior request (context only): ${run.prompt.slice(0, 850)}`,
-        `Owner's new instructions: ${feedback.trim()}`,
-        "Use only already-supported bounded capabilities. Stop and report unsupported steps. Do not claim an interrupted run resumed, do not make implicit permission grants."
-      ].join("\n\n").slice(0, 5800);
       const response = await mioApi<{ id: string; mode: string }>(`work/projects/${projectId}/runs`,
-        postJson({ prompt, task_type: choice, approved: true, ...(inspection ? { sources: selectedSources } : {}) }));
-      if (!/^[0-9a-f]{32}$/.test(response.id)) throw new Error("Invalid run identity returned by API");
-      setOpen(false); setFeedback(""); setApproved(false);
-      setMessage(`New ${choice} task queued: ${response.id.slice(0, 12)}. This is a new run, not an automatic resume.`);
+        postJson({ prompt: proposedPrompt, task_type: "engineering", approved: true }));
+      if (!/^[0-9a-f]{32}$/.test(response.id) || response.id === run.id || response.mode !== "engineering_queued")
+        throw new Error("The API did not confirm a new engineering run");
+      setMessage(`New approved engineering run: ${response.id.slice(0, 12)}. The original was not resumed.`);
       onSubmitted?.(response.id);
-    } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "The Work API did not accept the follow-up.");
-    } finally { setSubmitting(false); }
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Approval could not be submitted."); }
+    finally { setSubmitting(false); }
   }
 
-  return <section className={styles.approval} aria-label="Owner review and next action">
-    <div className={styles.actionHeading}><div><small>OWNER ACTION CENTER</small><h3>{active ? "Work is in progress" : review ? "Your attention is needed" : "Run reviewed"}</h3></div><span className={styles.statusText}>{run.state.replaceAll("_", " ")}</span></div>
-    <p>{reason}</p>
-    {run.error && <p className={styles.actionError}>Last error: {run.error}</p>}
-    {run.state === "needs_review" && <p className={styles.actionHint}>“Needs review” can mean deliberately unverified evidence, not necessarily a failure or an outstanding tool-permission request. Inspect the events and outcome before deciding.</p>}
-    {!active && <div className={styles.actionRow}>
-      <button type="button" className={styles.actionPrimary} onClick={() => setOpen(!open)}>{open ? "Close next-step form" : "Give feedback / approve next step"}</button>
-      <a href={`/work-mode?project=${projectId}`}>Full task evidence ↗</a>
-    </div>}
-    {open && !active && <div className={styles.actionForm}>
-      <div className={styles.choiceGrid} role="group" aria-label="New run type">
-        <label><input type="radio" checked={!inspection} onChange={() => setChoice("bounded")}/> Bounded research or writing</label>
-        <label><input type="radio" checked={inspection} onChange={() => setChoice("inspection")}/> Read-only source inspection</label>
-      </div>
-      <label>What should Scorpio do next?
-        <textarea value={feedback} maxLength={2200} onChange={e => setFeedback(e.target.value)} placeholder="Describe what was missing, what to change, or the exact question to investigate next (at least 10 characters)." />
-      </label>
-      {inspection && <label>Explicit tracked source allowlist (1–8 files; one per line)
-        <textarea value={sources} maxLength={1280} onChange={e => setSources(e.target.value)} spellCheck={false}/>
-        {!selectedSources && <span className={styles.actionError}>Select 1–8 unique paths under mio/, tests/, scripts/ or docs/, using supported source extensions.</span>}
-      </label>}
-      <label className={styles.confirm}><input type="checkbox" checked={approved} onChange={e => setApproved(e.target.checked)}/> I approve this specific new {inspection ? "read-only inspection" : "bounded follow-up"} task. It does not grant terminal, filesystem-write or browser permissions.</label>
-      <div className={styles.actionRow}><button type="button" className={styles.actionPrimary} disabled={!ready} onClick={() => void submit()}>{submitting ? "Submitting…" : "Approve and start NEW run"}</button><button type="button" onClick={() => { setOpen(false); setApproved(false); }}>Not now</button></div>
-      <p className={styles.actionHint}>Only the authenticated Work API can queue a task. The worker enforces one active run at a time and the existing inspection opt-in; this panel grants no new tools.</p>
-    </div>}
+  if (active) return <section className={styles.approval}><strong>Scorpio is working</strong><p>No permission decision is needed while this task is running.</p></section>;
+  if (!needsDecision) return null;
+
+  return <section className={styles.approval} aria-label="Owner approval decision">
+    <div className={styles.actionHeading}><div><small>OWNER APPROVAL</small>
+      <h3>{engineeringRetry ? "Scorpio proposes one new coding attempt" : "No automatic retry proposed"}</h3></div>
+      <span className={styles.statusText}>{run.state.replaceAll("_", " ")}</span></div>
+    <p>{engineeringRetry
+      ? "The previous code response could not be accepted. Scorpio will regenerate this four-function Python task using the pinned text-utilities acceptance suite. The previous run stays unchanged."
+      : "This result needs review. Scorpio will not change task type, request additional tools or start a new run without a suitable bounded proposal."}</p>
+    <p className={styles.actionHint}>Permissions: private coding artifact and network-isolated Python tests only. No host shell, arbitrary files, browser tools, source deployment or Git push.</p>
+    {run.error && <p className={styles.actionError}>Recorded error: {run.error}</p>}
+    {rejected ? <p role="status" className={styles.actionHint}>Rejected for this view. No new task was queued. This dismissal is not a server-side audit record.</p>
+      : <div className={styles.actionRow}>
+        {engineeringRetry && <button type="button" className={styles.actionPrimary} disabled={submitting} onClick={() => void approve()}>
+          {submitting ? "Submitting…" : "Approve one new engineering run"}</button>}
+        <button type="button" disabled={submitting} onClick={() => setRejected(true)}>Reject — do nothing</button>
+        <a href={`/work-mode?project=${projectId}`}>View evidence ↗</a>
+      </div>}
     {message && <p className={styles.actionMessage} role="status">{message}</p>}
   </section>;
 }

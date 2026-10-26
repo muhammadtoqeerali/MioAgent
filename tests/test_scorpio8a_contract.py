@@ -57,7 +57,9 @@ def test_thread_contract_not_local_storage():
 
 def test_work_assignment_capabilities_preserved():
     code = read("work-mode/page.tsx")
-    for marker in ('kind==="supported"', 'kind==="engineering"', 'kind==="computer"', 'work/projects', 'work/runs/', 'run.events'):
+    for marker in ('engineeringGoal', 'unsupportedGoal', 'proposedType',
+                   'Approve & start', 'Reject — do nothing', 'work/projects',
+                   'work/runs/', 'run.events'):
         assert marker in code
 
 def test_approval_uses_real_work_api_and_backend_controls():
@@ -90,8 +92,10 @@ def test_contextual_chat_sidebar_and_primary_shell():
 
 def test_review_requires_active_owner():
     code = read("_mio/scorpio-approval-panel.tsx")
-    assert 'approved && feedback.trim().length >= 10' in code
-    assert 'onClick={() => void submit()}' in code
+    assert 'onClick={() => void approve()}' in code
+    assert 'onClick={() => setRejected(true)}' in code
+    assert 'if (active) return' in code
+    assert 'task_type: "engineering", approved: true' in code
 
 def test_audit_and_no_host_actions():
     code = read("_mio/scorpio8a-panels.tsx")
