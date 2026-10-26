@@ -18,6 +18,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from mio import scorpio9d1_response as coding_reply
 from mio.model_fleet import FleetRouter
 from mio.sandbox_verify import HARNESS, PREFLIGHT, _bounded_run, sandbox_argv
 from mio.scorpio9d1_textutils import (
@@ -287,10 +288,16 @@ async def execute_engineering(root: Path, run_id: str, settings) -> dict:
             reply = await role.complete(messages, max_tokens=3600)
             model = reply.model
             try:
-                candidate = parse_draft(reply.text)
+                normalized = coding_reply.normalize_reply(reply.text, textutils=textutils)
+                if normalized != reply.text:
+                    event(root, run_id, "model.format_recovered",
+                          "Pinned source envelope recovered from "
+                          + coding_reply.response_shape(reply.text))
+                candidate = parse_draft(normalized)
             except WorkStop as exc:
                 last_error = str(exc)
-                event(root, run_id, "validation.reject", last_error[:250])
+                event(root, run_id, "validation.reject",
+                      last_error[:180] + "; format=" + coding_reply.response_shape(reply.text))
                 if attempt == 0:
                     messages.append({"role": "user", "content": (
                         "Last JSON was rejected: " + last_error + ". Return corrected JSON only.")})
