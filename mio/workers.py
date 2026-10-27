@@ -20,6 +20,7 @@ from mio.model_fleet import FleetRouter, load_policy
 from mio.project_tasks import apply_project, draft_project
 from mio.project_verification_tasks import verify_project_task
 from mio.repair_tasks import propose_project_repair
+from mio.scorpio9d3b9_chat_research import research_chat, should_research
 from mio.supervisor import supervise
 
 IGNORED_DIRS = {
@@ -127,6 +128,32 @@ async def run_ai_task(sessions: sessionmaker, task_id: str, router: ModelRouter)
             "planner_model": completion.model, "planner_provider": completion.provider,
         })
 
+    if should_research(prompt):
+        # Fixed public research tools; no general browser or Work owner grant.
+        update_task(sessions, task_id, progress=35,
+                    result={"stage": "research", "note": "Retrieving bounded public evidence"})
+        research_router = FleetRouter(router.settings, "research") if load_policy() else router
+        research = await research_chat(research_router, prompt)
+        # A canceled request cannot save a new Chat answer after network/model work.
+        with sessions.begin() as db:
+            task = db.get(Task, task_id)
+            if task is None or task.status == "canceled":
+                return
+            already = db.scalar(select(ChatMessage).where(ChatMessage.task_id == task_id))
+            if already is None:
+                db.add(ChatMessage(conversation_id=conversation_id, role="assistant",
+                                   content=research.answer, task_id=task_id))
+            task.result_json = json.dumps({
+                "stage": "completed", "mode": "live_research",
+                "answer": research.answer, "model": research.model,
+                "provider": research.provider, "evidence_status": research.evidence_status,
+                "verified_sources": research.verified_sources,
+                "sources": [{"ref": row["ref"], "url": row["url"],
+                             "page_verified": row["page_verified"]}
+                            for row in research.sources],
+            }, ensure_ascii=False)
+            task.status, task.progress, task.updated_at = "completed", 100, utcnow()
+        return
     task_router = FleetRouter(router.settings, "chat") if load_policy() else router
     result = await supervise(task_router, history, notes, on_plan=save_plan)
     # The user may have canceled while the model was responding. Commit task and
