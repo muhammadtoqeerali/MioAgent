@@ -12,6 +12,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import quote, urlsplit
 
+from mio.scorpio9d3b9r1_person_focus import (
+    fallback_query,
+    focused_query,
+    relevant_person_results,
+)
 from mio.studio_autoroute import route_intent
 from mio.studio_search_quality import search_query
 from mio.studio_tools import web_search
@@ -51,7 +56,7 @@ def _query(prompt: str) -> str:
     trimmed = prompt.strip()[:350]
     if len(trimmed) < 3:
         raise ValueError("Live research query is too short")
-    return search_query(trimmed)
+    return focused_query(prompt) or search_query(trimmed)
 
 
 def _safe_sources(records: list[dict], *, accept_verified: bool = False) -> list[dict]:
@@ -121,9 +126,21 @@ async def research_chat(router, prompt: str) -> ChatResearch:
         return ChatResearch(_unverified([], provider_failed=True), None, None, [], 0, "unavailable")
     if not isinstance(found, list) or not found:
         return ChatResearch(_unverified([], provider_failed=True), None, None, [], 0, "unavailable")
+    # A person-focused result must identify the *full named person* in the
+    # title/snippet, not merely match generic employment/verification terms.
+    # When needed, make at most one narrower person-only search retry.
+    chosen = relevant_person_results(prompt, found)
+    fallback = fallback_query(prompt)
+    if not chosen and fallback:
+        try:
+            retried = await web_search(fallback)
+        except (ValueError, OSError, RuntimeError):
+            retried = []
+        if isinstance(retried, list):
+            chosen = relevant_person_results(prompt, retried)
     # The existing hardened client fetches bounded pages; it never follows links.
     # First reject unsafe search URLs before calling the network fetcher.
-    filtered = _safe_sources(found)
+    filtered = _safe_sources(chosen)
     if not filtered:
         return ChatResearch(_unverified([], provider_failed=True), None, None, [], 0, "unavailable")
     try:
