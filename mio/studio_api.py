@@ -27,6 +27,7 @@ from mio.scorpio9d3b11a_studio_evidence import (
     studio_research_sources,
     studio_source_scope,
 )
+from mio.scorpio9d3b11c_citation_repair import repair_citations_once
 from mio.studio_autoroute import route_intent
 from mio.studio_files import StudioError, private_root, read_attachment, save_attachment
 from mio.studio_tools import (
@@ -234,6 +235,12 @@ def register_studio_routes(app: FastAPI, settings: Settings, require_token: Call
                 ], max_tokens=1900)
                 answer, model = output.text, output.model
             if decision == "research":
+                if not images:
+                    revised, retry_model = await repair_citations_once(
+                        router, payload.prompt, answer, sources
+                    )
+                    if retry_model is not None:
+                        answer, model = revised, retry_model
                 answer = checked_studio_answer(answer, sources)
             return {"operation": "answer", "answer": answer, "model": model, "mode": decision,
                     "sources": sources, "attachments": [{"ref": f"F{i+1}", "name": a["name"]}
