@@ -1,4 +1,4 @@
-"""Bounded, evidence-carrying Work task orchestration. No arbitrary shell/browser tools.
+"""Bounded, evidence-carrying Work task orchestration. No unrestricted shell/browser tools.
 
 An actual run can search public sources, inspect owner-attached documents, use
 approved local models for draft/review, and record every stage to private SQLite.
@@ -67,6 +67,10 @@ async def execute(root: Path, run_id: str, settings: Settings) -> dict:
     record = run_info(root, run_id)
     if record["state"] != "queued":
         raise WorkStop("Only a new queued task can be executed")
+    from mio.scorpio9d3b7_work_browser import maybe_execute_browser
+    browser_result = maybe_execute_browser(root, run_id, record)
+    if browser_result is not None:
+        return browser_result
     from mio.scorpio9c4_worker_tool import maybe_execute_scoped_tool
     tool_result = maybe_execute_scoped_tool(root, run_id, record)
     if tool_result is not None:

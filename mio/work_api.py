@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from mio.config import Settings
+from mio.scorpio9d3b7_work_browser import register_browser_routes
 from mio.studio_files import StudioError
 from mio.work_core import (
     RUNTIME,
@@ -52,9 +53,10 @@ class TaskNew(BaseModel):
 
 def register_work_routes(app: FastAPI, settings: Settings, require_token: Callable,
                          root: Path = RUNTIME / "work") -> None:
-    """Never expose an endpoint to grant filesystem, network or shell permissions."""
+    """Never expose general filesystem, unrestricted network or shell permissions."""
     auth = [Depends(require_token)]
     register_work_lifecycle(app, require_token, root)
+    register_browser_routes(app, require_token, root)
     # Only the managed native runtime owns the persistent production queue.
     # Unit-test app factories must not interrupt the operator's real Work tasks.
     # Test stores retain their old interruption semantics. In production a
