@@ -41,6 +41,16 @@ _OUTPUT = re.compile(
     r"citations|examples|points|updates|a\s+summary|an\s+answer)\b.*$",
     re.IGNORECASE,
 )
+# Remove presentation requirements, not topic words, from public research queries.
+_EVIDENCE_PREAMBLE = re.compile(
+    r"^\s*according\s+to\s+(?:(?:current|recent)\s+)?"
+    r"(?:public|official|online)\s+(?:sources|information|evidence)\s*,?\s*",
+    re.IGNORECASE,
+)
+_EVIDENCE_TRAILER = re.compile(
+    r"[.?!]\s+(?:please\s+)?(?:cite|provide citations|list sources)\b.*$",
+    re.IGNORECASE,
+)
 _WORD = re.compile(r"[a-z0-9]+")
 
 
@@ -48,7 +58,9 @@ def search_query(prompt: str) -> str:
     """Remove search instructions/output formatting while retaining subject terms."""
     if not isinstance(prompt, str) or not 3 <= len(prompt.strip()) <= 350:
         raise StudioError("Search requires a question of 3–350 characters")
-    candidate = _PREFIX.sub("", prompt.strip(), count=1)
+    candidate = _EVIDENCE_PREAMBLE.sub("", prompt.strip(), count=1)
+    candidate = _PREFIX.sub("", candidate, count=1)
+    candidate = _EVIDENCE_TRAILER.sub("", candidate, count=1)
     candidate = _OUTPUT.sub("", candidate, count=1).strip(" \t\n\r.,:;?!")
     if len(candidate) < 3:
         candidate = prompt.strip()
@@ -142,14 +154,25 @@ async def quality_search(
             except (StudioError, httpx.HTTPError, ValueError):
                 pass
             selected = relevant_results(all_results, clean)
-        # Narrow awkward natural-language queries further without fabricating results.
-        shorter = " ".join(focus_terms(clean))
+        # Retry bounded topic terms if verbose instructions defeated public search.
+        # A provider failure must not prevent trying the independent fallback.
+        terms = focus_terms(clean)
+        shorter = " ".join(terms)
         if not selected and shorter and shorter.lower() != clean.lower():
-            try:
-                all_results.extend(await provider_search(shorter, client))
-                all_results.extend(await duck_search(shorter, client))
-            except (StudioError, httpx.HTTPError, ValueError, ElementTree.ParseError):
-                pass
+            for provider in (provider_search, duck_search):
+                try:
+                    all_results.extend(await provider(shorter, client))
+                except (StudioError, httpx.HTTPError, ValueError, ElementTree.ParseError):
+                    pass
+            selected = relevant_results(all_results, clean)
+        # Compact broad queries once more without weakening topical relevance.
+        compact = " ".join(terms[:5]) if len(terms) > 5 else ""
+        if not selected and compact and compact.lower() not in (clean.lower(), shorter.lower()):
+            for provider in (provider_search, duck_search):
+                try:
+                    all_results.extend(await provider(compact, client))
+                except (StudioError, httpx.HTTPError, ValueError, ElementTree.ParseError):
+                    pass
             selected = relevant_results(all_results, clean)
         if not selected:
             if provider_unavailable and not all_results:

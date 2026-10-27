@@ -15,6 +15,7 @@ from mio.scorpio9d3b9r1_person_focus import (
     relevant_person_results,
 )
 from mio.scorpio9d3b10_public_tools import check_citations, search_open
+from mio.studio_files import StudioError
 from mio.studio_search_quality import search_query
 
 MAX_EVIDENCE_CHARS = 13000
@@ -53,7 +54,12 @@ async def studio_research_sources(
     options = {"search_fn": person_filtered}
     if enricher is not None:
         options["enrich_fn"] = enricher
-    bundle = await search_open(chosen_query, **options)
+    try:
+        bundle = await search_open(chosen_query, **options)
+    except StudioError:
+        # Search absence is a valid research outcome, not an HTTP/server failure.
+        # Preserve hard failures (TypeError, provenance errors, unsafe URLs).
+        return []
     return bundle["sources"]
 
 
