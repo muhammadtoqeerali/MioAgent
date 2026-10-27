@@ -241,6 +241,13 @@ def test_research_endpoint_injects_real_sources_and_model_cites(tmp_path, monkey
 
     monkeypatch.setattr(api, "web_search", AsyncMock(return_value=[{
         "ref": "W1", "title": "Example", "url": "https://example.org/paper", "snippet": "New trial"}]))
+    from mio import scorpio9d3b10_public_tools as shared_tools
+
+    async def opened(rows):
+        return [{**row, "page_verified": True,
+                 "page_excerpt": "This study reported a new trial."} for row in rows]
+
+    monkeypatch.setattr(shared_tools, "enrich_sources", opened)
     monkeypatch.setattr(api, "FleetRouter", FakeRouter)
     api.register_studio_routes(app, Settings(), require_token, root)
     with TestClient(app) as client:
@@ -248,6 +255,8 @@ def test_research_endpoint_injects_real_sources_and_model_cites(tmp_path, monkey
                                json={"mode": "research", "prompt": "What changed in recent trials?", "attachments": []})
     assert response.status_code == 200, response.text
     assert response.json()["sources"][0]["ref"] == "W1"
+    assert response.json()["sources"][0]["page_verified"] is True
+    assert "Retrieved public-page excerpts" in response.json()["source_scope"]
     assert response.json()["model"] == "gpt-oss:20b"
 
 

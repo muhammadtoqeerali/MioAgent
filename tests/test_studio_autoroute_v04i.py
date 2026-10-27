@@ -66,6 +66,13 @@ def test_automatic_studio_search_calls_real_adapter_interface(tmp_path, monkeypa
                 "snippet": "Research report"}]
     lookup = AsyncMock(return_value=sources)
     monkeypatch.setattr(studio_api, "web_search", lookup)
+    from mio import scorpio9d3b10_public_tools as shared_tools
+
+    async def opened(rows):
+        return [{**row, "page_verified": True,
+                 "page_excerpt": "The latest robotics report is publicly available."} for row in rows]
+
+    monkeypatch.setattr(shared_tools, "enrich_sources", opened)
     monkeypatch.setattr(studio_api, "FleetRouter", FakeFleet)
     app = FastAPI()
     studio_api.register_studio_routes(app, object(), auth, tmp_path)
@@ -75,7 +82,9 @@ def test_automatic_studio_search_calls_real_adapter_interface(tmp_path, monkeypa
     assert response.status_code == 200, response.text
     assert response.json()["mode"] == "research"
     assert response.json()["operation"] == "answer"
-    assert response.json()["sources"] == sources
+    assert len(response.json()["sources"]) == 1
+    assert response.json()["sources"][0]["url"] == sources[0]["url"]
+    assert response.json()["sources"][0]["page_verified"] is True
     assert roles == ["research"]
     lookup.assert_awaited_once()
 
