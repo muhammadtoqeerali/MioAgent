@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from mio.config import Settings
 from mio.model_fleet import FleetRouter, inventory, load_policy
+from mio.scorpio9d3b10_public_tools import register_public_research_routes
 from mio.studio_autoroute import route_intent
 from mio.studio_files import StudioError, private_root, read_attachment, save_attachment
 from mio.studio_tools import (
@@ -115,6 +116,7 @@ async def _image_task(root: Path, job_id: str, prompt: str, checkpoint: str) -> 
 def register_studio_routes(app: FastAPI, settings: Settings, require_token: Callable,
                            root: Path = RUNTIME) -> None:
     auth = [Depends(require_token)]
+    register_public_research_routes(app, require_token)
 
     @app.post("/api/studio/intent", dependencies=auth)
     def intent(payload: IntentRequest):
