@@ -165,21 +165,28 @@ def fetch_public_page(url: str) -> dict:
 
 
 async def enrich_sources(sources: list[dict], fetcher: Callable = fetch_public_page) -> list[dict]:
-    """Keep search provenance and attach verified page excerpts where possible.
+    """Try up to six public search hits for at most three verified excerpts.
 
-    At most three pages are fetched; failures are explicit and never upgraded to
-    verified evidence. This function does not crawl or fetch discovered links.
+    A blocked or oversized first result must not consume the *success* budget.
+    Every candidate retains its original search provenance; failed pages remain
+    snippets only. Never crawl links, follow redirects, or trust search metadata
+    claiming that a page has already been verified.
     """
     records = [dict(item) for item in sources[:6]]
     for item in records:
         item["page_verified"] = False
-    for item in records[:MAX_PAGES]:
+        item.pop("page_excerpt", None)
+    verified = 0
+    for item in records:
+        if verified >= MAX_PAGES:
+            break
         url = item.get("url")
         try:
             details = await asyncio.to_thread(fetcher, url)
             if not details.get("page_verified") or not details.get("page_excerpt"):
                 raise EvidenceError("Page has no verified excerpt")
             item.update(details)
+            verified += 1
         except (EvidenceError, OSError, TypeError, ValueError):
             item["evidence_scope"] = "search snippet only; page not verified"
     return records
