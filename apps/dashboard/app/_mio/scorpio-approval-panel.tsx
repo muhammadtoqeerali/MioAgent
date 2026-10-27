@@ -60,6 +60,7 @@ export default function ScorpioApprovalPanel({ projectId, run, onSubmitted }: {
     finally { setSubmitting(false); }
   }
 
+  if (run.mode.startsWith("browser_")) return null;
   if (active) return <section className={styles.approval}><strong>Scorpio is working</strong><p>No permission decision is needed while this task is running.</p></section>;
   if (!needsDecision) return null;
 
