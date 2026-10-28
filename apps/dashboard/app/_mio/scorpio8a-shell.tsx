@@ -11,6 +11,7 @@ const NAV: Nav[] = [
   {name:"Chat",url:"/chat",symbol:"◉",match:["/chat"]},
   {name:"Projects",url:"/projects-space",symbol:"▦",match:["/projects-space","/projects"]},
   {name:"Work",url:"/work-mode",symbol:"▤",match:["/work-mode","/work"]},
+  {name:"Coding Workspace",url:"/coding-workspace",symbol:"⌘",match:["/coding-workspace"]},
   {name:"Supervisor",url:"/supervisor",symbol:"✦",match:["/supervisor"]},
   {name:"Approvals",url:"/approvals",symbol:"◇",match:["/approvals"]},
   {name:"Tools & Permissions",url:"/tools-permissions",symbol:"⬡",match:["/tools-permissions"]},
@@ -42,7 +43,7 @@ export default function ScorpioShell({children}:{children:ReactNode}){
   const isLegacy=protectedLegacy.some(p=>path===p||path.startsWith(p+"/"));
   return <div className={`scorpio8a-app ${compact?"scorpio8a-compact":""}`}>
     <aside className="scorpio8a-side" aria-label="Scorpio main navigation">
-      <Link href="/control-room" className="scorpio8a-brand"><img src="/scorpio-mark.svg?v=8c" alt="Scorpio scorpion logo" width={55} height={55}/><span>Scorpio<small>AI AGENT PLATFORM</small></span></Link>
+      <Link href="/control-room" className="scorpio8a-brand scorpio12c-brand" aria-label="Scorpio Control Room"><picture><source srcSet="/scorpio-brand-gold.png?v=12c" type="image/png"/><img src="/scorpio-mark.svg?v=8c" alt="Scorpio gold-and-black emblem" width={182} height={182} className="scorpio12c-logo"/></picture><span className="scorpio12c-brandWords">Scorpio<small>AI AGENT PLATFORM</small></span></Link>
       <div className="scorpio8a-sideSection">WORKSPACE</div>
       <nav aria-label="Main sections">
         {NAV.map((n,i)=><Link href={n.url} key={n.url} aria-current={current.name===n.name?"page":undefined} className={`scorpio8a-nav ${current.name===n.name?"active":""}`}><span className="scorpio8a-navIcon" aria-hidden="true">{n.symbol}</span><span className="scorpio8a-navLabel">{n.name}</span>{n.name==="Approvals"&&status.attention>0&&<span className="scorpio8a-count">{status.attention}</span>}{i===3&&<span className="scorpio8a-navSep"/>}</Link>)}
