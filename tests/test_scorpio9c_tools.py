@@ -156,3 +156,31 @@ def test_real_bubblewrap_required(scope):
     item = _create_grant(root, project, plan, "sample.txt")
     actual = inspect(root, item["id"], "sample.txt")
     assert actual["sha256"] == hashlib.sha256((folder / "sample.txt").read_bytes()).hexdigest()
+
+
+def test_legacy_bwrap_digest_uses_clean_environment(tmp_path, monkeypatch):
+    """The digest tool must pass only its intended FD and sanitized environment."""
+    import subprocess
+
+    from mio import scorpio9c_tools as tools
+
+    sample = tmp_path / "sample.txt"
+    sample.write_bytes(b"scorpio bounded sandbox regression\n")
+    monkeypatch.setattr(tools.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    with sample.open("rb") as stream:
+        fd = stream.fileno()
+        expected = hashlib.sha256(sample.read_bytes()).hexdigest()
+
+        def fake_run(argv, **kwargs):
+            assert "--clearenv" not in argv
+            assert "--unshare-all" in argv
+            assert "--ro-bind-data" in argv
+            assert argv[argv.index("--ro-bind-data") + 1:argv.index("--ro-bind-data") + 3] == [str(fd), "/tmp/input"]
+            assert kwargs["env"] == {"PATH": "/usr/bin:/bin"}
+            assert kwargs["pass_fds"] == (fd,)
+            assert kwargs["cwd"] == "/"
+            assert kwargs.get("shell", False) is False
+            return subprocess.CompletedProcess(argv, 0, (expected + "  /tmp/input\n").encode(), b"")
+
+        monkeypatch.setattr(tools.subprocess, "run", fake_run)
+        assert tools._sandbox_digest(fd) == expected

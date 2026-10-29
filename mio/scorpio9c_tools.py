@@ -202,7 +202,8 @@ def _sandbox_digest(fd: int) -> str:
     if not executable or not Path("/usr/bin/sha256sum").is_file():
         raise WorkStop("Bubblewrap or system sha256sum unavailable; execution denied")
     command = [
-        executable, "--die-with-parent", "--unshare-all", "--new-session", "--clearenv",
+        # Legacy bwrap has no --clearenv. subprocess.run(env=...) scrubs the host environment.
+        executable, "--die-with-parent", "--unshare-all", "--new-session",
         "--setenv", "PATH", "/usr/bin:/bin",
         "--ro-bind", "/usr", "/usr",
         "--ro-bind-try", "/lib", "/lib",

@@ -49,7 +49,10 @@ def test_sandbox_command_no_host_mounts(tmp_path, monkeypatch):
     assert "--unshare-net" in argv
     assert "--unshare-pid" in argv
     assert "--die-with-parent" in argv
-    assert "--clearenv" in argv
+    # Legacy Bubblewrap does not support --clearenv.
+    # _bounded_run explicitly supplies a sanitized environment.
+    assert "--clearenv" not in argv
+    assert "--setenv" in argv
     assert "--cap-drop" in argv
     assert "--ro-bind" in argv
     assert "--tmpfs" in argv  # Internal root only, explicitly remounted read-only.
@@ -220,3 +223,28 @@ def test_api_verification_records_result_async(tmp_path, monkeypatch):
         assert result["status"] == "completed", result
         assert result["result"]["passed"] is True
         assert client.get(f"/api/projects/{PID}", headers=headers).json()["status"] == "completed"
+
+
+def test_sandbox_launcher_scrubs_inherited_environment(monkeypatch):
+    """Verify environment scrubbing without relying on Bubblewrap version."""
+    import sys
+
+    from mio import sandbox_verify as sv
+
+    sentinel = "SCORPIO_TEST_HOST_SECRET_SENTINEL"
+    monkeypatch.setenv(sentinel, "must-not-reach-child")
+
+    code = (
+        "import os; "
+        "assert 'SCORPIO_TEST_HOST_SECRET_SENTINEL' not in os.environ; "
+        "assert os.environ.get('PATH') == '/usr/bin:/bin'; "
+        "print('SCORPIO_ENV_SCRUB_OK')"
+    )
+
+    rc, log, timed, overflow = sv._bounded_run(
+        [sys.executable, "-I", "-B", "-c", code],
+        seconds=10,
+    )
+
+    assert (rc, timed, overflow) == (0, False, False), log
+    assert "SCORPIO_ENV_SCRUB_OK" in log

@@ -95,7 +95,10 @@ def sandbox_argv(staging: Path, code: str) -> list[str]:
     return [
         bwrap, "--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid",
         "--unshare-ipc", "--unshare-uts", "--unshare-net", "--cap-drop", "ALL",
-        "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
+        # Legacy Bubblewrap lacks --clearenv. The launcher uses
+        # subprocess.Popen(env={"PATH": "/usr/bin:/bin"}) to clear
+        # inherited host environment before starting Bubblewrap.
+        "--setenv", "PATH", "/usr/bin:/bin",
         "--setenv", "HOME", "/work", "--setenv", "TMPDIR", "/tmp",
         "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
         "--tmpfs", "/", "--ro-bind", "/usr", "/usr",

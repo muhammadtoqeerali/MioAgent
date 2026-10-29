@@ -15,8 +15,8 @@ import time
 from pathlib import Path
 
 from mio.config import Settings
-from mio.work_agent import execute
 from mio.supervisor_core import advance_supervisor
+from mio.work_agent import execute
 from mio.work_core import RUNTIME, WorkStop, db, event, run_info, update
 
 WORK_ROOT = RUNTIME / "work"
